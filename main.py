@@ -591,14 +591,7 @@ async def on_startup(app: Application):
 )
     logging.info("Daily job scheduled at 08:00 %s", TZ_NAME)
 
-    # разовый тест
-    app.job_queue.run_once(
-    send_digest,
-    when=10,
-    name="morning_test",
-    data={"chat_id": CHAT_ID},
-)
-    logging.info("One-off test job scheduled in 10s")
+   
     await app.bot.send_message(chat_id=CHAT_ID, text="Бот запущен, готовлю дайджесты 🚀")
     
 
@@ -611,3 +604,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
