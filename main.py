@@ -616,15 +616,16 @@ def run_flask():
 
 
 if __name__ == "__main__":
-     import asyncio
+    import asyncio
     from threading import Thread
 
     # Запускаем Flask в отдельном потоке
     Thread(target=run_flask).start()
 
     # Запускаем Telegram-бота
-    asyncio.run(application.run_polling())
     main()
+
+
 
 
 
