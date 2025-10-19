@@ -601,8 +601,23 @@ def main():
     application.post_init = on_startup
     application.run_polling(close_loop=False)
 
+from flask import Flask
+from threading import Thread
+
+# === Flask "заглушка" для Koyeb ===
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "Bot is running fine ✅"
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=8000)
+
+
 if __name__ == "__main__":
     main()
+
 
 
 
