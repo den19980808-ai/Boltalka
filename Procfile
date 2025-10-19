@@ -1,0 +1,1 @@
+worker: python Boltalshyk_bot.py
