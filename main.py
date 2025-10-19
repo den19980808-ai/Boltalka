@@ -585,14 +585,13 @@ async def on_startup(app: Application):
     # ежедневное расписание
     app.job_queue.run_daily(
     send_digest,
-    time=time(hour=8, minute=0, tzinfo=tz),
+    time=time(hour=21, minute=49, tzinfo=tz),
     name="morning_digest",
     data={"chat_id": CHAT_ID}
 )
     logging.info("Daily job scheduled at 08:00 %s", TZ_NAME)
 
    
-    await app.bot.send_message(chat_id=CHAT_ID, text="Бот запущен, готовлю дайджесты 🚀")
     
 
 def main():
@@ -604,4 +603,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
