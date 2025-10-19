@@ -454,10 +454,16 @@ def build_weather_block(weather_info, comments_by_city):
 
 
 # 3) Универсальный рендер дайджеста (вынесено из send_morning)
-async def send_digest(context: ContextTypes.DEFAULT_TYPE, chat_id: str | int):
+async def send_digest(context: ContextTypes.DEFAULT_TYPE):
     tz = ZoneInfo(TZ_NAME)
     now_local = datetime.now(tz)
     today_local = now_local.date()
+
+    job_data = getattr(context, "job", None)
+    chat_id = (job_data.data if job_data else {}).get("chat_id")
+    if not chat_id:
+        # на случай прямого вызова без JobQueue — используем дефолт из .env
+        chat_id = CHAT_ID
 
     # Погода
     weather_info = {}
@@ -499,6 +505,7 @@ async def send_morning(context: ContextTypes.DEFAULT_TYPE, custom_holidays_for_d
     tz = ZoneInfo(TZ_NAME)
     now_local = datetime.now(tz)            # было: today_local = datetime.now(tz).date()
     today_local = now_local.date()
+    chat_id = context.job.data["chat_id"]
 
     logging.info("=== DEBUG: Testing custom holidays ===")
     test_date = datetime.now().date()
@@ -573,11 +580,24 @@ async def on_startup(app: Application):
         raise RuntimeError('Установите поддержку JobQueue: pip install "python-telegram-bot[job-queue]"')
     tz = ZoneInfo(TZ_NAME)
     logging.info("Scheduler init...")
+
+
     # ежедневное расписание
-    app.job_queue.run_daily(lambda c: send_digest(c, CHAT_ID), time=time(hour=8, minute=0, tzinfo=tz), name="morning_digest")
+    app.job_queue.run_daily(
+    send_digest,
+    time=time(hour=8, minute=0, tzinfo=tz),
+    name="morning_digest",
+    data={"chat_id": CHAT_ID}
+)
     logging.info("Daily job scheduled at 08:00 %s", TZ_NAME)
+
     # разовый тест
-    app.job_queue.run_once(lambda c: send_digest(c, CHAT_ID), when=10, name="morning_test")
+    app.job_queue.run_once(
+    send_digest,
+    when=10,
+    name="morning_test",
+    data={"chat_id": CHAT_ID},
+)
     logging.info("One-off test job scheduled in 10s")
     await app.bot.send_message(chat_id=CHAT_ID, text="Бот запущен, готовлю дайджесты 🚀")
     
