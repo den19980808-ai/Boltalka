@@ -585,7 +585,7 @@ async def on_startup(app: Application):
     # ежедневное расписание
     app.job_queue.run_daily(
     send_digest,
-    time=time(hour=21, minute=49, tzinfo=tz),
+    time=time(hour=8, minute=0, tzinfo=tz),
     name="morning_digest",
     data={"chat_id": CHAT_ID}
 )
@@ -603,5 +603,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
