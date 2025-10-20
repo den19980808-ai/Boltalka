@@ -585,7 +585,7 @@ async def on_startup(app: Application):
     # ежедневное расписание
     app.job_queue.run_daily(
     send_digest,
-    time=time(hour=8, minute=0, tzinfo=tz),
+    time=time(hour=8, minute=7, tzinfo=tz),
     name="morning_digest",
     data={"chat_id": CHAT_ID}
 )
@@ -624,6 +624,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram-бота
     main()
+
 
 
 
