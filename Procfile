@@ -1,1 +1,1 @@
-worker: python Boltalshyk_bot.py
+worker: python main.py
