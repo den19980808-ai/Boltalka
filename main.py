@@ -736,19 +736,32 @@ def run_flask():
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Регистрация обработчика текста «что сегодня?»
+    # Триггер "Болтун"
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
+
+    # Ваш "что сегодня?"
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
-    
-    # Обработчик для чата
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            lambda update, context: chat_handler.handle_chat_message(update, context)
-        )
-    )
-    
+
+    # Отладка — в самом конце
+    application.add_handler(MessageHandler(filters.ALL, lambda u, c: logging.info(f"DEBUG update: {getattr(u, 'message', None) and u.message.text}")))
+
     application.post_init = on_startup
     application.run_polling(close_loop=False)
+
+# 1) Колбэк для реакции на "Болтун"
+async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.effective_message.text or "").lower()
+    logging.info(f"📨 MSG: {txt}")
+    if re.search(r"\bболтун\b", txt, re.IGNORECASE):
+        # пример простого ответа или вызов вашего chat_handler
+        handler = get_chat_handler()
+        reply = await handler.reply(text=update.effective_message.text, user_id=update.effective_user.id)
+        await update.effective_message.reply_text(reply)
+    else:
+        logging.info("🚫 Триггер 'болтун' не найден")
+
+# 2) Регистрация хэндлера ТЕКСТА (важно: до других "catch‑all")
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
 
 if __name__ == "__main__":
     # Инициализация чат-обработчика ПЕРЕД запуском
@@ -780,6 +793,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
