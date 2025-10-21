@@ -5,6 +5,7 @@ import random
 import requests
 import logging
 import atexit
+from telegram import update
 from datetime import datetime, time, date
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -177,6 +178,7 @@ def strip_unsupported_html(s: str) -> str:
     return s
 
 def should_respond(self, update: Update) -> bool:
+    """Проверяет, стоит ли отвечать на сообщение"""
     if not update.message or not update.message.text:
         return False
 
@@ -778,6 +780,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
