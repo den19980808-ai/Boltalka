@@ -721,7 +721,24 @@ async def on_startup(app: Application):
     
 flask_app = Flask(__name__)
 
+
 @flask_app.route("/")
+
+# 1) Колбэк для реакции на "Болтун"
+async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.effective_message.text or "").lower()
+    logging.info(f"📨 MSG: {txt}")
+    if re.search(r"\bболтун\b", txt, re.IGNORECASE):
+        # пример простого ответа или вызов вашего chat_handler
+        handler = get_chat_handler()
+        reply = await handler.reply(text=update.effective_message.text, user_id=update.effective_user.id)
+        await update.effective_message.reply_text(reply)
+    else:
+        logging.info("🚫 Триггер 'болтун' не найден")
+
+# 2) Регистрация хэндлера ТЕКСТА (важно: до других "catch‑all")
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
+
 def home():
     return "Bot is running fine ✅"
 
@@ -748,20 +765,6 @@ def main():
     application.post_init = on_startup
     application.run_polling(close_loop=False)
 
-# 1) Колбэк для реакции на "Болтун"
-async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (update.effective_message.text or "").lower()
-    logging.info(f"📨 MSG: {txt}")
-    if re.search(r"\bболтун\b", txt, re.IGNORECASE):
-        # пример простого ответа или вызов вашего chat_handler
-        handler = get_chat_handler()
-        reply = await handler.reply(text=update.effective_message.text, user_id=update.effective_user.id)
-        await update.effective_message.reply_text(reply)
-    else:
-        logging.info("🚫 Триггер 'болтун' не найден")
-
-# 2) Регистрация хэндлера ТЕКСТА (важно: до других "catch‑all")
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
 
 if __name__ == "__main__":
     # Инициализация чат-обработчика ПЕРЕД запуском
@@ -793,6 +796,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
