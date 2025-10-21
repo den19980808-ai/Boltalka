@@ -4,6 +4,7 @@ import json
 import random
 import requests
 import logging
+import atexit
 from datetime import datetime, time, date
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -348,7 +349,8 @@ def _intel_chat(prompt: str, max_tokens: int = 400, temperature: float = 0.8) ->
         return ""
     pass
 
-chat_handler = init_chat_handler(_intel_chat)        
+chat_handler = init_chat_handler(_intel_chat)
+atexit.register(chat_handler._save_memory)        
 
 # --- вспомогательное: нормализация для дедупликации (убираем город и ключевые слова погоды)
 KEY_WEATHER_WORDS = ["пасмур", "ясн", "облач", "дожд", "снег", "туман", "ветер"]
@@ -764,6 +766,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
