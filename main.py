@@ -763,7 +763,10 @@ def main():
 
     # отладчик — ставим последним
     application.add_handler(
-        MessageHandler(filters.ALL, lambda u, c: logging.info(f"DEBUG update: {getattr(u, 'message', None) and u.message.text}"))
+        MessageHandler(
+            filters.ALL, 
+            lambda u, c: logging.info(f"DEBUG update: {getattr(u, 'message', None) and u.message.text}")
+        )
     )
 
     application.post_init = on_startup
@@ -800,6 +803,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
