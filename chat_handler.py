@@ -9,28 +9,34 @@ from telegram.ext import ContextTypes, MessageHandler, filters
 
 def get_boltun_reply(user_name, message):
     from openai import OpenAI
+    import os
+
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
                 "content": (
-                    f"Ты — Болтун, тёплый и живой собеседник. "
-                    f"Общайся с пользователями как с друзьями, без излишней вежливости и формальности. "
-                    f"Пиши естественно, иногда коротко, иногда чуть с юмором. "
-                    f"Не задавай вопрос после каждого ответа, если это неуместно. "
-                    f"Если человек говорит что-то грустное — поддержи, но не как психолог, а как близкий приятель. "
-                    f"Используй иногда смайлики, но не после каждого предложения.": prompt
+                    "Ты — Болтун, тёплый и живой собеседник. "
+                    "Общайся с пользователями как с друзьями, без излишней вежливости и формальности. "
+                    "Пиши естественно, иногда коротко, иногда с лёгким юмором. "
+                    "Не задавай вопросы после каждого ответа, только если это уместно. "
+                    "Если человек говорит что-то грустное — поддержи, но по-дружески, просто и тепло. "
+                    "Иногда используй эмодзи, но не после каждого предложения. "
+                    "Говори живо, как будто вы сидите на кухне и болтаете."
                 )
             },
-            {"role": "user", "content": f"{user_name}: {message}"}
+            {
+                "role": "user",
+                "content": f"{user_name}: {message}"
+            }
         ]
     )
 
     return response.choices[0].message.content.strip()
-
+    
 class ChatHandler:
     def __init__(self, intel_chat_function, memory_file="memory_cache.json"):
         self.intel_chat = intel_chat_function
