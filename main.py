@@ -754,11 +754,17 @@ def main():
      application = Application.builder().token(BOT_TOKEN).build()
 
     # порядок важен: сначала целевой триггер, потом «что сегодня?», потом отладка
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger)
+    )
+    application.add_handler(
+        MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today)
+    )
 
     # отладчик — ставим последним
-    application.add_handler(MessageHandler(filters.ALL, lambda u, c: logging.info(f"DEBUG update: {getattr(u, 'message', None) and u.message.text}")))
+    application.add_handler(
+        MessageHandler(filters.ALL, lambda u, c: logging.info(f"DEBUG update: {getattr(u, 'message', None) and u.message.text}"))
+    )
 
     application.post_init = on_startup
     application.run_polling(close_loop=False)
@@ -794,6 +800,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
