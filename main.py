@@ -13,12 +13,10 @@ from flask import Flask
 from threading import Thread
 from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
-from openai import OpenAI  # requirements: openai>=1.40
-
+from openai import OpenAI
 
 from holidays import build_holidays_section, load_birthdays, birthdays_for_date
 from chat_handler import init_chat_handler, get_chat_handler
-
 
 # --- окружение
 load_dotenv(dotenv_path="token.env", override=True)
@@ -36,7 +34,7 @@ INTELLIGENCE_API_KEY = os.getenv("INTELLIGENCE_API_KEY")
 INTELLIGENCE_MODEL = os.getenv("INTELLIGENCE_MODEL", "openai/gpt-oss-120b")
 INTELLIGENCE_URL = "https://api.intelligence.io.solutions/api/v1/chat/completions"
 
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")  # или "gpt-4o"
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 _openai_client = None
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
@@ -44,6 +42,7 @@ CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Ode
 
 # Человечные названия стран для вывода
 COUNTRY_NAMES = {"NL": "Нидерланды", "UA": "Украина", "PL": "Польша"}
+
 
 # --- Список стран для «широкого поиска» (ENV)
 SCAN_COUNTRIES_ENV = os.getenv(
@@ -348,10 +347,14 @@ def get_photo_for_weather(desc: str) -> str:
 
 
 
+# --- Инициализация chat_handler
 def _intel_chat(prompt: str, max_tokens: int = 400, temperature: float = 0.8) -> str:
     try:
-        client = _get_openai()
-        resp = client.chat.completions.create(
+        global _openai_client
+        if _openai_client is None:
+            _openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        resp = _openai_client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
@@ -361,7 +364,6 @@ def _intel_chat(prompt: str, max_tokens: int = 400, temperature: float = 0.8) ->
     except Exception as e:
         logging.warning("OpenAI error: %s", e)
         return ""
-    pass
 
 chat_handler = init_chat_handler(_intel_chat)
 atexit.register(chat_handler._save_memory)        
@@ -581,6 +583,98 @@ def build_weather_block(weather_info, comments_by_city):
     return "\n".join(lines)
 
 
+# === Хэндлер триггера "Болтун" ===
+async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Логируем входящее сообщение
+        user = update.effective_user
+        chat = update.effective_chat
+        message_text = update.message.text if update.message else None
+        
+        logging.info(f"📨 Получено сообщение от {user.first_name} в чате {chat.title if chat.type == 'group' else 'private'}: {message_text}")
+        
+        if not message_text:
+            return
+            
+        # Проверяем, содержит ли сообщение триггер "болтун"
+        if re.search(r'\bболтун\b', message_text, re.IGNORECASE):
+            logging.info(f"⚡ Обнаружен триггер 'Болтун' в сообщении: {message_text}")
+            
+            # Отправляем действие "печатает"
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id, 
+                action="typing"
+            )
+            
+            # Получаем ответ от chat_handler
+            handler = get_chat_handler()
+            if handler:
+                response = await handler.generate_contextual_response(update, context)
+                if response:
+                    await update.message.reply_text(
+                        response,
+                        reply_to_message_id=update.message.message_id
+                    )
+                    logging.info(f"✅ Ответ отправлен: {response[:50]}...")
+                else:
+                    logging.warning("❌ Chat handler вернул пустой ответ")
+            else:
+                logging.error("❌ Chat handler не инициализирован")
+                await update.message.reply_text("Извините, я временно недоступен 🛠️")
+        else:
+            logging.info("🚫 Триггер 'Болтун' не найден в сообщении")
+            
+    except Exception as e:
+        logging.error(f"❌ Ошибка в обработчике on_trigger: {e}")
+        try:
+            await update.message.reply_text("Произошла ошибка при обработке сообщения 🛠️")
+        except:
+            pass
+
+# === Хэндлер "что сегодня?" ===
+async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        logging.info("🔄 Обработка запроса 'что сегодня?'")
+        await send_digest(context, update.effective_chat.id)
+    except Exception as e:
+        logging.error(f"❌ Ошибка в обработчике on_whats_today: {e}")
+
+# === Отладочный хэндлер ===
+async def debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Логирует все входящие сообщения для отладки"""
+    try:
+        message_text = getattr(update, 'message', None) and update.message.text
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        if message_text:
+            logging.info(f"🔍 DEBUG: Сообщение от {user.first_name if user else 'N/A'} в {chat.title if chat.type == 'group' else 'private'}: {message_text}")
+        else:
+            logging.info(f"🔍 DEBUG: Сообщение без текста от {user.first_name if user else 'N/A'}")
+    except Exception as e:
+        logging.error(f"❌ Ошибка в debug_log: {e}")
+
+# === Планировщик ===
+async def on_startup(app: Application):
+    try:
+        if app.job_queue is None:
+            logging.error('❌ JobQueue не доступен')
+            return
+            
+        tz = ZoneInfo(TZ_NAME)
+        logging.info("⏰ Инициализация планировщика...")
+
+        # Ежедневное расписание
+        app.job_queue.run_daily(
+            lambda context: send_digest(context, CHAT_ID),
+            time=time(hour=8, minute=1, tzinfo=tz),
+            name="morning_digest"
+        )
+        logging.info(f"✅ Ежедневная задача запланирована на 08:01 {TZ_NAME}")
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка в on_startup: {e}")
+
 # 3) Универсальный рендер дайджеста (вынесено из send_morning)
 async def send_digest(context: ContextTypes.DEFAULT_TYPE, chat_id: str | int):
     tz = ZoneInfo(TZ_NAME)
@@ -691,34 +785,7 @@ async def send_morning(context: ContextTypes.DEFAULT_TYPE, custom_holidays_for_d
     caption = strip_unsupported_html(caption)  
     photo_url = get_photo_for_weather(photo_desc_for_cover) or "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee"
     await context.bot.send_photo(chat_id=CHAT_ID, photo=photo_url, caption=caption, parse_mode=ParseMode.HTML)
-    pass
-
-
-
-# 4) Обработчик «что сегодня?»
-async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
-    # Отвечаем в тот же чат, где спросили
-    await send_digest(context, update.effective_chat.id)
-
-# 5) Планировщик и регистрация хендлера
-async def on_startup(app: Application):
-    if app.job_queue is None:
-        raise RuntimeError('Установите поддержку JobQueue: pip install "python-telegram-bot[job-queue]"')
-    tz = ZoneInfo(TZ_NAME)
-    logging.info("Scheduler init...")
-
-
-    # ежедневное расписание
-    app.job_queue.run_daily(
-    send_digest,
-    time=time(hour=8, minute=1, tzinfo=tz),
-    name="morning_digest",
-    data={"chat_id": CHAT_ID}
-)
-    logging.info("Daily job scheduled at 08:00 %s", TZ_NAME)
-    pass
-
-   
+    pass   
     
 flask_app = Flask(__name__)
 
@@ -737,27 +804,17 @@ def run_flask():
     port = int(os.environ.get("PORT", 8000))
     flask_app.run(host="0.0.0.0", port=port)
 
-# === Хэндлер триггера "Болтун" ===
-async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (update.effective_message.text or "")
-    logging.info(f"📨 MSG: {txt}")
-    if re.search(r"(^|\W)болтун(\W|$)", txt, flags=re.IGNORECASE):
-        handler = get_chat_handler()
-        reply = await handler.reply(text=txt, user_id=update.effective_user.id)
-        await update.effective_message.reply_text(reply)
-    else:
-        logging.info("🚫 Триггер не найден")
-        
+      
 
 # === Точка входа ===
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # триггер "Болтун"
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
-
     # "что сегодня?"
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
+
+    # триггер "Болтун"
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
 
     # отладка — последней
     application.add_handler(
@@ -772,26 +829,30 @@ def main():
 
 
 if __name__ == "__main__":
-    # опционально: health-check сервер
+    # Запускаем Flask сервер для health checks в отдельном потоке
     try:
-        from flask import Flask
-        from threading import Thread
         flask_app = Flask(__name__)
 
-        @flask_app.get("/")
-        def ok():
-            return "ok"
+        @flask_app.route("/")
+        def home():
+            return "Bot is running fine ✅"
 
-        def run_health():
-            flask_app.run(host="0.0.0.0", port=8000)
+        @flask_app.route("/health")
+        def health():
+            return "OK", 200
 
-        Thread(target=run_health, daemon=True).start()
-    except Exception:
-        pass
+        def run_flask():
+            port = int(os.environ.get("PORT", 8000))
+            flask_app.run(host="0.0.0.0", port=port)
 
-    # Запускаем Telegram-бота в основном потоке
-    logging.info("🤖 Запускаем Telegram бота...")
+        Thread(target=run_flask, daemon=True).start()
+        logging.info("✅ Flask сервер запущен на порту 8000")
+    except Exception as e:
+        logging.warning(f"⚠️ Не удалось запустить Flask сервер: {e}")
+
+    # Запускаем Telegram бота
     main()
+
 
 
 
