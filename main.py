@@ -724,20 +724,6 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 
-# 1) Колбэк для реакции на "Болтун"
-async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (update.effective_message.text or "").lower()
-    logging.info(f"📨 MSG: {txt}")
-    if re.search(r"\bболтун\b", txt, re.IGNORECASE):
-        # пример простого ответа или вызов вашего chat_handler
-        handler = get_chat_handler()
-        reply = await handler.reply(text=update.effective_message.text, user_id=update.effective_user.id)
-        await update.effective_message.reply_text(reply)
-    else:
-        logging.info("🚫 Триггер 'болтун' не найден")
-
-# 2) Регистрация хэндлера ТЕКСТА (важно: до других "catch‑all")
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
 
 def home():
     return "Bot is running fine ✅"
@@ -750,18 +736,33 @@ def run_flask():
     port = int(os.environ.get("PORT", 8000))
     flask_app.run(host="0.0.0.0", port=port)
 
-def main():
-     application = Application.builder().token(BOT_TOKEN).build()
+# === Хэндлер триггера "Болтун" ===
+async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.effective_message.text or "")
+    logging.info(f"📨 MSG: {txt}")
+    if re.search(r"(^|\W)болтун(\W|$)", txt, flags=re.IGNORECASE):
+        handler = get_chat_handler()
+        reply = await handler.reply(text=txt, user_id=update.effective_user.id)
+        await update.effective_message.reply_text(reply)
+    else:
+        logging.info("🚫 Триггер не найден")
 
-    # порядок важен: сначала целевой триггер, потом «что сегодня?», потом отладка
+
+# === Точка входа ===
+def main():
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # триггер "Болтун"
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
+
+    # "что сегодня?"
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
 
-    # отладчик — ставим последним
+    # отладка — последней
     application.add_handler(
         MessageHandler(
-            filters.ALL, 
-            lambda u, c: logging.info(f"DEBUG update: {getattr(u, 'message', None) and u.message.text}")
+            filters.ALL,
+            lambda u, c: logging.info(f"DEBUG: {getattr(u, 'message', None) and u.message.text}")
         )
     )
 
@@ -770,35 +771,27 @@ def main():
 
 
 if __name__ == "__main__":
-    # Инициализация чат-обработчика ПЕРЕД запуском
-    from chat_handler import init_chat_handler
-    
-    # Убедитесь что эта функция определена выше в коде
-    def _intel_chat(prompt: str, max_tokens: int = 280, temperature: float = 0.8) -> str:
-        try:
-            client = _get_openai()
-            resp = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            return (resp.choices[0].message.content or "").strip()
-        except Exception as e:
-            logging.warning("OpenAI error: %s", e)
-            return ""
-    
-    # Инициализируем обработчик чата
-    chat_handler = init_chat_handler(_intel_chat)
-    
-    # Запускаем Flask в отдельном потоке
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logging.info("🌐 Flask запущен на порту %s", os.environ.get("PORT", 8000))
-    
+    # опционально: health-check сервер
+    try:
+        from flask import Flask
+        from threading import Thread
+        flask_app = Flask(__name__)
+
+        @flask_app.get("/")
+        def ok():
+            return "ok"
+
+        def run_health():
+            flask_app.run(host="0.0.0.0", port=8000)
+
+        Thread(target=run_health, daemon=True).start()
+    except Exception:
+        pass
+
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
