@@ -7,6 +7,8 @@ import logging
 from datetime import datetime, time, date
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
 from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from openai import OpenAI  # requirements: openai>=1.40
@@ -762,6 +764,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
