@@ -693,13 +693,7 @@ async def send_morning(context: ContextTypes.DEFAULT_TYPE, custom_holidays_for_d
     await context.bot.send_photo(chat_id=CHAT_ID, photo=photo_url, caption=caption, parse_mode=ParseMode.HTML)
     pass
 
-async def debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = getattr(update, "message", None) and update.message.text
-    logging.info(f"DEBUG: {txt}")
 
-# ...
-# отладка — последней
-application.add_handler(MessageHandler(filters.ALL, debug_log))
 
 # 4) Обработчик «что сегодня?»
 async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
@@ -753,7 +747,14 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(reply)
     else:
         logging.info("🚫 Триггер не найден")
+        
+async def debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = getattr(update, "message", None) and update.message.text
+    logging.info(f"DEBUG: {txt}")
 
+# ...
+# отладка — последней
+application.add_handler(MessageHandler(filters.ALL, debug_log))
 
 # === Точка входа ===
 def main():
@@ -798,6 +799,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
