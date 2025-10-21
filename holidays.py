@@ -1,5 +1,5 @@
 # holidays.py
-import os, re, json, logging, requests
+import os, re, json, logging, requests, random
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
@@ -83,7 +83,6 @@ def _sanitize_lines_block(text: str) -> str:
 def load_custom_holidays() -> list[dict]:
     """
     Загружает список праздников из файла (HOLIDAYS_FILE) или ENV (HOLIDAYS_JSON).
-    Поддерживает оба формата: {"date": "...", "name": "..."} и {"date": "...", "holiday": "..."}
     """
     path = os.getenv("HOLIDAYS_FILE") or os.getenv("HOLIDAYS_PATH")
     items = []
@@ -92,18 +91,40 @@ def load_custom_holidays() -> list[dict]:
         try:
             with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f) or []
-                logging.info(f"Loaded {len(data)} items from custom holidays file: {path}")
+                logging.info(f"📅 Загружено {len(data)} праздников из файла: {path}")
                 
-                # Преобразуем формат если нужно
                 for item in data:
-                    # Поддерживаем оба формата: "name" и "holiday"
-                    if "holiday" in item and "name" not in item:
-                        item["name"] = item["holiday"]
-                    items.append(item)
+                    # Нормализация формата
+                    normalized_item = {}
+                    
+                    # Обрабатываем поле названия
+                    if "holiday" in item:
+                        normalized_item["name"] = item["holiday"]
+                    elif "name" in item:
+                        normalized_item["name"] = item["name"]
+                    else:
+                        continue  # Пропускаем элементы без названия
+                    
+                    # Обрабатываем дату
+                    if "date" in item:
+                        normalized_item["date"] = item["date"]
+                    else:
+                        continue  # Пропускаем элементы без даты
+                    
+                    # Дополнительные поля
+                    if "country" in item:
+                        normalized_item["country"] = item["country"]
+                    if "iso" in item:
+                        normalized_item["iso"] = item["iso"].upper()
+                    if "type" in item:
+                        normalized_item["type"] = item["type"]
+                    
+                    items.append(normalized_item)
                         
         except Exception as e:
-            logging.warning(f"Custom Holidays file load failed: {e}")
+            logging.error(f"❌ Ошибка загрузки файла праздников {path}: {e}")
     
+    # Загрузка из переменной окружения
     raw = (os.getenv("HOLIDAYS_JSON") or "").strip()
     if raw:
         try:
@@ -112,11 +133,11 @@ def load_custom_holidays() -> list[dict]:
                 if "holiday" in item and "name" not in item:
                     item["name"] = item["holiday"]
                 items.append(item)
-            logging.info(f"Loaded {len(items)} items from HOLIDAYS_JSON")
+            logging.info(f"📅 Загружено {len(data)} праздников из HOLIDAYS_JSON")
         except Exception as e:
-            logging.warning(f"Custom Holidays JSON parse failed: {e}")
+            logging.error(f"❌ Ошибка парсинга HOLIDAYS_JSON: {e}")
     
-    logging.info(f"Total custom holidays loaded: {len(items)}")
+    logging.info(f"📊 Всего пользовательских праздников: {len(items)}")
     return items
 
 def _parse_mmdd_any(s: str) -> tuple[int|None, int|None]:
@@ -340,58 +361,154 @@ def birthdays_for_date(dt: date, people: list[dict]) -> list[dict]:
     return out
 
 # --- Рендер через ИИ + фоллбэк
+# --- Рендер через ИИ + фоллбэк
+# --- Рендер через ИИ + фоллбэк
 def _render_block_ai(intel_chat, primary: dict | None, extras: list[dict], birthdays: list[dict]) -> str:
     data = {
-        "birthdays": [{"name": b["name"], "age": b.get("age")} for b in (birthdays or [])][:5],
-        "holidays": {"primary": primary or None, "extras": (extras or [])[:2]}
+        "birthdays": [
+            {"name": b.get("name"), "age": b.get("age"), "note": (b.get("note") or "")}
+            for b in (birthdays or [])
+        ][:3],
+        "holidays": {
+            "primary": (
+                {"name": primary.get("name"), "country": primary.get("country"), "type": primary.get("type")}
+                if primary else None
+            ),
+            "extras": [
+                {"name": it.get("name"), "country": it.get("country"), "type": it.get("type")}
+                for it in (extras or [])[:2]
+            ],
+        },
     }
+
     prompt = (
-        "Собери компактный русскоязычный блок дней рождения и праздников для семейного чата.\n"
-        "1) Если есть дни рождения: заголовок <b>Дни рождения</b>, затем 1–3 строки «🎂 Имя (возраст) — тёплая подпись 6–14 слов».\n"
-        "2) Затем <b>Праздники сегодня</b>: одна строка для главного и до двух для дополнительных — эмодзи + название (со страной) + шутливая подпись 6–14 слов.\n"
-        "Только русский, без хэштегов/приветствий/пояснений; верни готовый многострочный текст (HTML заголовки оставь).\n"
-        f"Данные: {json.dumps(data, ensure_ascii=False)}"
+        "Ты создаешь информационный блок для семейного чата Telegram. Следуй строго этим правилам:\n\n"
+        
+        "🎯 РОЛЬ: Дружелюбный помощник для семьи\n"
+        "🎯 ЦЕЛЬ: Информировать о днях рождения и праздниках\n"
+        "🎯 ТОН: Теплый, естественный, легкий юмор\n\n"
+        
+        "📝 СТРУКТУРА БЛОКА:\n"
+        "1. Если есть дни рождения:\n"
+        "   <b>Дни рождения</b>\n"
+        "   • Для каждого: «🎂 Имя (возраст) — персонализированная подпись 8-16 слов»\n"
+        "   • Креативно перефразируй note (не копируй дословно!)\n"
+        "   • Добавь легкую метафору или образ\n"
+        "   • Если возраста нет — не указывай скобки\n\n"
+        
+        "2. ОБЯЗАТЕЛЬНО: ОДНА ПУСТАЯ СТРОКА между блоками\n\n"
+        
+        "3. Праздники:\n"
+        "   <b>Праздники сегодня</b>\n"
+        "   • Для каждого: «[эмодзи] Название (страна) — остроумная подпись 8-14 слов»\n"
+        "   • Эмодзи: 🎉 для официальных, ✨ для неофициальных\n"
+        "   • Подпись должна быть разной для каждого праздника\n\n"
+        
+        "🚫 ЗАПРЕЩЕНО:\n"
+        "- Клише: «достойный повод», «пусть день будет», «отметить малым»\n"
+        "- Императивы: «возьми», «не забудь»\n" 
+        "- Придумывать факты вне данных\n"
+        "- Копировать более 3 слов подряд из note\n"
+        "- Более 1 эмодзи в подписи\n\n"
+        
+        "✅ ТРЕБУЕМЫЙ СТИЛЬ:\n"
+        "- Естественная разговорная речь\n"
+        "- Легкий интеллигентный юмор\n"
+        "- Теплота без фамильярности\n"
+        "- Конкретика вместо общих фраз\n\n"
+        
+        "📋 ПРИМЕР ХОРОШЕГО ТОНА (НЕ КОПИРОВАТЬ!):\n"
+        "<b>Дни рождения</b>\n"
+        "🎂 Мария (35) — как хорошая книга: с каждым годом становится только интереснее и мудрее.\n"
+        "🎂 Алексей — сегодня твой день сияет особенным светом, пусть он будет полон теплых моментов.\n"
+        "\n"
+        "<b>Праздники сегодня</b>\n"
+        "🎉 День библиотек (Польша) — прекрасный повод перелистать страницы дня в поисках маленьких чудес.\n"
+        "✨ День шоколада (Мир) — сладкий намек на то, что иногда жизнь нужно воспринимать не так серьезно.\n\n"
+        
+        "🎲 ТВОИ ДАННЫЕ:\n"
+        f"{json.dumps(data, ensure_ascii=False, indent=2)}\n\n"
+        
+        "🔚 ФОРМАТ ВЫВОДА:\n"
+        "Только готовый текст блока с HTML-заголовками. Без пояснений, без JSON, без мета-комментариев."
     )
+
     text = ""
     if callable(intel_chat):
         try:
-            text = intel_chat(prompt, max_tokens=380, temperature=0.85)
+            text = intel_chat(prompt, max_tokens=500, temperature=0.75)
         except Exception:
             text = ""
+
     if text:
         cleaned = _sanitize_lines_block(text)
         if cleaned:
             return cleaned
 
-    # Фоллбэк
+    # Улучшенный фоллбэк с гарантированным отступом
+    def create_birthday_line(b: dict) -> str:
+        name = b.get("name", "")
+        age = f" ({b['age']})" if b.get("age") else ""
+        note = (b.get("note") or "").strip()
+        
+        if note:
+            # Легкое перефразирование заметки
+            if "день рождения" in note.lower():
+                note = note.replace("день рождения", "этот особенный день")
+            if "поздравляем" in note.lower():
+                note = note.replace("поздравляем", "радуемся")
+            return f"🎂 {name}{age} — {note}"
+        else:
+            themes = [
+                f"— сегодня твой день сияет особенным светом и теплом.",
+                f"— пусть этот день принесет столько радости, сколько ты даришь другим.",
+                f"— как хорошая музыка: с каждым годом звучит все богаче и глубже.",
+            ]
+            theme_index = hash(name) % len(themes)
+            return f"🎂 {name}{age} {themes[theme_index]}"
+
     lines = []
     if birthdays:
         lines.append("<b>Дни рождения</b>")
         for b in birthdays[:3]:
-            age = f" ({b['age']})" if b.get("age") else ""
-            lines.append(f"🎂 {b['name']}{age} — пусть день будет тёплым и очень добрым.")
-        lines.append("")
+            lines.append(create_birthday_line(b))
+        lines.append("")  # ОБЯЗАТЕЛЬНАЯ пустая строка между блоками
+
     lines.append("<b>Праздники сегодня</b>")
+    
+    def create_holiday_line(item: dict) -> str:
+        tag = "🎉" if (item.get("type") or "") == "official" else "✨"
+        name = item.get("name") or "Праздник"
+        country = item.get("country") or ""
+        suffix = f" ({country})" if country else ""
+        
+        themes = [
+            f"— добавляет особого настроения и поводов для улыбки.",
+            f"— прекрасный повод заметить маленькие радости вокруг.",
+            f"— напоминает, что каждый день может стать особенным.",
+            f"— привносит в будни каплю праздничного волшебства.",
+        ]
+        theme_index = hash(name) % len(themes)
+        return f"{tag} {name}{suffix} {themes[theme_index]}"
+    
     if primary:
-        tag = "🎉" if (primary.get("type") or "") == "official" else "✨"
-        nm = primary.get("name") or "Праздник"
-        cn = primary.get("country") or ""
-        suffix = f" ({cn})" if cn else ""
-        lines.append(f"{tag} {nm}{suffix} — достойный повод отметить малым, но искренним.")
+        lines.append(create_holiday_line(primary))
     for it in (extras or [])[:2]:
-        tag = "🎉" if (it.get("type") or "") == "official" else "✨"
-        nm = it.get("name") or "Праздник"
-        cn = it.get("country") or ""
-        suffix = f" ({cn})" if cn else ""
-        lines.append(f"{tag} {nm}{suffix} — маленькая искра радости в расписании.")
+        lines.append(create_holiday_line(it))
+        
     return "\n".join(lines)
+
+    
+    
+
+
 
 # --- Публичная точка входа
 def build_holidays_section(dt: date, intel_chat, birthdays: list[dict] | None = None) -> str:
     now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
     items = []
     
-    logging.info("=== Starting holiday collection ===")
+    logging.info("🎯 Начинаем сбор информации о праздниках...")
     
     # 0) базовые страны по локальной дате
     for iso, name in COUNTRY_NAMES.items():
@@ -399,11 +516,11 @@ def build_holidays_section(dt: date, intel_chat, birthdays: list[dict] | None = 
         country_items = _collect_country_today(d_loc, iso, name)
         items.extend(country_items)
         if country_items:
-            logging.info(f"Found {len(country_items)} holidays from {name}")
+            logging.info(f"✅ Найдено {len(country_items)} праздников в {name}")
 
     # 1) широкий поиск, если пусто
     if not items:
-        logging.info("No holidays from base countries, starting wide search...")
+        logging.info("🔍 В основных странах праздников нет, начинаем расширенный поиск...")
         matched = 0
         for iso, name in SCAN_COUNTRIES:
             d_loc = _local_date_for_iso(now_utc, iso)
@@ -411,32 +528,31 @@ def build_holidays_section(dt: date, intel_chat, birthdays: list[dict] | None = 
             if chunk:
                 items.extend(chunk)
                 matched += 1
-                logging.info(f"Found {len(chunk)} holidays from {name} (wide search)")
+                logging.info(f"🌍 Найдено {len(chunk)} праздников в {name} (расширенный поиск)")
                 if matched >= SCAN_COUNTRY_LIMIT:
                     break
 
-    # 2) пользовательский фоллбэк Holidays.json, если по API всё пусто
+    # 2) пользовательский фоллбэк Holidays.json
     if not items:
-        logging.info("No holidays from APIs, trying custom holidays...")
-        # Берём «домашнюю» дату dt (параметр функции) — она уже соответствует TZ проекта (Amsterdam)
+        logging.info("📂 Праздников в API нет, проверяем пользовательские праздники...")
         user_list = load_custom_holidays()
         custom_items = custom_holidays_for_date(dt, user_list)
         items.extend(custom_items)
         if custom_items:
-            logging.info(f"Found {len(custom_items)} custom holidays")
+            logging.info(f"🎁 Найдено {len(custom_items)} пользовательских праздников")
 
     # 3) выбор и рендер
     primary, extras = _select_top3(items)
     
-    logging.info(f"Final selection - Primary: {primary['name'] if primary else 'None'}, Extras: {len(extras)}")
-    logging.info(f"Birthdays count: {len(birthdays or [])}")
+    logging.info(f"🏆 Выбрано: Главный - {primary['name'] if primary else 'нет'}, Дополнительные - {len(extras)}")
+    logging.info(f"🎂 Дней рождения сегодня: {len(birthdays or [])}")
     
     block = _render_block_ai(intel_chat, primary, extras, birthdays or [])
     
-    # при полном отсутствии событий добавим безопасную строку
+    # при полном отсутствии событий
     if not (birthdays or primary or extras):
-        logging.warning("No holidays or birthdays found at all!")
-        block = "<b>Праздники сегодня</b>\n✨ Сегодня больших праздников нет — придумайте свой маленький повод для улыбки."
+        logging.warning("📭 Праздников и дней рождения не найдено")
+        block = "<b>Праздники сегодня</b>\n✨ Сегодня можно создать свой повод для радости — иногда самые лучшие праздники те, что мы придумываем сами."
     
     return _sanitize_lines_block(block)
 
