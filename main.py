@@ -9,8 +9,12 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from openai import OpenAI  # requirements: openai>=1.40
+
 
 from holidays import build_holidays_section, load_birthdays, birthdays_for_date
+from chat_handler import init_chat_handler, get_chat_handler
+
 
 # --- окружение
 load_dotenv(dotenv_path="token.env", override=True)
@@ -27,6 +31,9 @@ UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
 INTELLIGENCE_API_KEY = os.getenv("INTELLIGENCE_API_KEY")
 INTELLIGENCE_MODEL = os.getenv("INTELLIGENCE_MODEL", "openai/gpt-oss-120b")
 INTELLIGENCE_URL = "https://api.intelligence.io.solutions/api/v1/chat/completions"
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")  # или "gpt-4o"
+_openai_client = None
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
 CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
@@ -58,6 +65,12 @@ BAD_MARKERS = [
     "we need", "the user asks", "let's craft", "let us", "explain", "instruction",
     "output json", "return json", "формат json", "без пояснений", "требуется", "нужно сделать"
 ]
+
+def _get_openai():
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _openai_client
 
 def is_russian_strict(text: str) -> bool:
     if not text:
@@ -102,25 +115,37 @@ def sanitize_comment(text: str) -> str:
     return ""
 
 def sanitize_wish(text: str) -> str:
-    lines = [normalize(x) for x in (text or "").splitlines() if normalize(x)]
-    for ln in lines:
-        if not is_russian_strict(ln):
+    raw = (text or "").replace("\r\n", "\n")
+    # Не теряем пустые строки — они нужны перед цитатой
+    lines = []
+    for ln in raw.split("\n"):
+        base = normalize(ln)
+        # пустую строку сохраняем
+        if base == "":
+            lines.append("")
             continue
-        if ln.startswith(("Привет", "Здравствуйте", "Доброе утро", "Добрый день")):
-            continue
-        ln = ln.replace("#", "")
-        if len(ln) > 200:
-            cut = ln[:200]
-            for sep in [". ", " — ", "! ", "? "]:
-                if sep in cut:
-                    cut = cut[:cut.rfind(sep)+1]
-                    break
-            ln = cut
-        if len(ln) < 140:
-            if len(ln) < 130:
-                ln += " 🙂"
-        return ln
-    return ""
+        # валидация кириллицы (сохраняем blockquote даже если есть теги)
+        core = re.sub(r"[^\u0400-\u04FF ]", "", base)
+        if core and not is_russian_strict(core):
+            letters = re.sub(r"[^A-Za-zА-Яа-яЁё]", "", base)
+            if LATIN_RE.search(letters):
+                continue
+        lines.append(base)
+    out = "\n".join(lines).strip()
+
+    # Если слишком длинно — сократим часть до цитаты, но не цитату
+    if len(out) > 360 and "<blockquote>" in out:
+        head, _, tail_after = out.partition("<blockquote>")
+        tail = "<blockquote>" + tail_after
+        head = head.strip()
+        if len(head) > 300:
+            head = head[:300]
+            # обрезаем по последнему пробелу, чтобы не резать слово
+            if " " in head:
+                head = head[:head.rfind(" ")] + "…"
+        out = (head + "\n\n" + tail).strip()
+    return out
+
 
 HTML_BR_RE = re.compile(r"<\s*br\s*/?\s*>", flags=re.I)
 ALLOWED_TAGS = {"b", "i", "u", "s", "code", "pre", "a", "blockquote", "tg-spoiler"}
@@ -179,25 +204,53 @@ def sanitize_greeting(text: str) -> str:
         return strip_unsupported_html(ln)
     return ""
 
+RU_MONTHS = [
+    "января","февраля","марта","апреля","мая","июня",
+    "июля","августа","сентября","октября","ноября","декабря"
+]
+
+def human_ru_date(d: datetime) -> str:
+    # 21 октября
+    return f"{d.day} {RU_MONTHS[d.month-1]}"
+
+
 def ai_generate_greeting_intel(now_local, first_city: str, wi: dict | None) -> str:
-    # Приветствие для семьи — без упоминаний городов/стран
-    tod_label, greet_phrase = time_of_day(now_local)
     weekday = WEEKDAY_RU[now_local.weekday()]
-    style = random.choice(["энергичный", "спокойный", "игривый", "ободряющий"])
+    greet_phrase = time_of_day(now_local)[1]
+    date_human = human_ru_date(now_local)
+
     prompt = (
-        "Сгенерируй ОДНУ строку приветствия на русском (80–160 символов), "
-        "разговорно и с лёгким юмором, 1–2 уместных эмодзи. "
-        f"Можно начать с «{greet_phrase}», упомяни «{weekday}» и общий настрой дня. "
-        "Не упоминай города и страны, без хэштегов и служебных пояснений. Верни только одну строку."
-        f" Стиль: {style}."
+        "Ты — дружелюбный помощник для семейного чата. Создай ОДНО приветствие на русском (120-200 символов).\n\n"
+        "ТРЕБОВАНИЯ:\n"
+        f"- Начни с «{greet_phrase}!»\n"
+        f"- Упомяни, что сегодня {weekday}\n"
+        "- Тон: тёплый, естественный, с лёгким позитивным юмором\n"
+        "- 1-2 уместных эмодзи для оживления текста\n"
+        "- Без упоминания городов, стран, погоды\n"
+        "- Избегай клише вроде 'пусть день будет хорошим'\n"
+        "- Сделай акцент на маленьких радостях и простых моментах\n\n"
+        "ПРИМЕРЫ ХОРОШЕГО ТОНА:\n"
+        "«Доброе утро! Вторник — отличный повод для маленьких побед и тёплого кофе ☕️»\n"
+        "«Добрый день! Среда на полпути — самое время для глубокого вдоха и улыбки 😊»\n\n"
+        "Сгенерируй только одну строку приветствия:"
     )
+
     for _ in range(3):
-        raw = _intel_chat(prompt, max_tokens=160, temperature=0.85)
+        raw = _intel_chat(prompt, max_tokens=180, temperature=0.8)
         g = sanitize_greeting(raw)
         if g:
+            g = g.replace("\n", " ").replace("  ", " ").strip()
+            # Защита от слишком длинных приветствий
+            if len(g) > 240:
+                g = g[:240]
+                if " " in g:
+                    g = g[:g.rfind(" ")] + "…"
             return g
-    fb = f"{greet_phrase}! {weekday.capitalize()} пусть идёт легко: планы — по шагам, улыбка — по умолчанию 😉"
-    return sanitize_greeting(fb) or f"{greet_phrase}! Хорошего дня 🙂"
+
+    fb = f"{greet_phrase}! {weekday.capitalize()} — время для маленьких радостей и спокойных свершений 😊"
+    return sanitize_greeting(fb)
+
+
 
 
 # --- погода (OWM)
@@ -278,31 +331,22 @@ def get_photo_for_weather(desc: str) -> str:
 
 
 
-
-
-# --- Intelligence.io универсальный вызов
-def _intel_chat(prompt: str, max_tokens: int = 220, temperature: float = 0.8) -> str:
-    if not INTELLIGENCE_API_KEY:
-        logging.warning("INTELLIGENCE_API_KEY отсутствует")
-        return ""
-    headers = {"Authorization": f"Bearer {INTELLIGENCE_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "messages": [{"role": "user", "content": prompt}],
-        "model": INTELLIGENCE_MODEL,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
+def _intel_chat(prompt: str, max_tokens: int = 400, temperature: float = 0.8) -> str:
     try:
-        resp = requests.post(INTELLIGENCE_URL, headers=headers, json=payload, timeout=25)
-        resp.raise_for_status()
-        data = resp.json()
-        msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
-        content = (msg.get("content") or msg.get("reasoning_content") or "").strip()
-        logging.info("INTEL RAW: %s", content[:300])
-        return content
+        client = _get_openai()
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return (resp.choices[0].message.content or "").strip()
     except Exception as e:
-        logging.warning("INTEL error: %s", e)
+        logging.warning("OpenAI error: %s", e)
         return ""
+    pass
+
+chat_handler = init_chat_handler(_intel_chat)        
 
 # --- вспомогательное: нормализация для дедупликации (убираем город и ключевые слова погоды)
 KEY_WEATHER_WORDS = ["пасмур", "ясн", "облач", "дожд", "снег", "туман", "ветер"]
@@ -327,16 +371,30 @@ def demonym(city_ru: str) -> str:
 # Усиленный промпт: не повторять название города в самой фразе
 def ai_generate_comment_intel(city_ru: str, temp_c: int, desc: str, hint: str, avoid_skeletons: set[str] | None = None) -> str:
     locals_term = demonym(city_ru)
-    avoid_note = " Избегай повторения конструкции ранее." if avoid_skeletons else ""
+    avoid_note = " Избегай повторения конструкций из предыдущих фраз." if avoid_skeletons else ""
+
     base_prompt = (
-        f"Погода: {temp_c}°C, {desc}. Аудитория: {locals_term}. "
-        "Сгенерируй ОДНУ фразу на русском (8–16 слов), дружелюбно и с лёгким юмором. "
-        "Упомяни погодные условия словами (перефразируй), добавь практический совет (зонт/SPF/слои/туман/ветер). "
-        "Не упоминай название города, не используй эмодзи, без приветствий и хэштегов. Только фраза."
-        + avoid_note
+        "Ты создаёшь краткие комментарии о погоде для семейного чата.\n\n"
+        f"ДАННЫЕ: {temp_c}°C, {desc}. Аудитория: {locals_term}.\n\n"
+        "ТРЕБОВАНИЯ:\n"
+        "- ОДНА фраза (8-16 слов) на русском\n"
+        "- Дружелюбный тон с лёгким юмором\n"
+        "- Упомяни погодные условия (перефразируй описание)\n"
+        "- Добавь практический совет из подсказки\n"
+        "- Не упоминай название города\n"
+        "- Без эмодзи, без приветствий, без хэштегов\n"
+        "- Естественный разговорный стиль\n\n"
+        f"ПОДСКАЗКА ДЛЯ СОВЕТА: {hint}\n\n"
+        "ПРИМЕРЫ:\n"
+        "«На улице прохладно и ветрено — самое время для тёплого шарфа и бодрой прогулки»\n"
+        "«Солнечно и ясно — отличный день для солнечных очков и хорошего настроения»\n"
+        "«Лёгкий дождь намекает, что зонт сегодня будет как нельзя кстати»\n\n"
+        f"{avoid_note}\n"
+        "Сгенерируй только одну фразу:"
     )
+
     for _ in range(3):
-        raw = _intel_chat(base_prompt, max_tokens=100, temperature=0.9)
+        raw = _intel_chat(base_prompt, max_tokens=120, temperature=0.85)
         sent = sanitize_comment(raw)
         if sent and is_russian_strict(sent):
             if not avoid_skeletons:
@@ -344,17 +402,16 @@ def ai_generate_comment_intel(city_ru: str, temp_c: int, desc: str, hint: str, a
             sk = phrase_skeleton(sent, city_ru, desc)
             if sk and sk not in avoid_skeletons:
                 return sent
-    # тематический фоллбэк без названия города и без эмодзи
+            
     templates = [
-        f"{locals_term.capitalize()} достанется {desc.lower()}; совет — {hint}.",
-        f"Сегодня {desc.lower()}; логичный выбор — {hint}.",
-        f"На улице {desc.lower()}; комфорт спасают {hint}.",
+        f"{locals_term.capitalize()} сегодня {desc.lower()} — {hint}.",
+        f"На улице {desc.lower()}, так что {hint}.",
+        f"Погода шепчет: {desc.lower()}, а это значит — {hint}.",
     ]
     return random.choice(templates)
 
 # Батч-генерация — передаём демоним и требование не упоминать город
 def ai_generate_comments_batch_intel(city_items):
-    # city_items: [{"city": "Леуварден", "temp": 8, "desc": "...", "hint": "..."}]
     enriched = []
     for it in city_items:
         it2 = dict(it)
@@ -362,14 +419,24 @@ def ai_generate_comments_batch_intel(city_items):
         enriched.append(it2)
 
     prompt = (
-        "Дан JSON со списком городов и погодой.\n"
-        "Для каждого запиши ОДНУ фразу (8–16 слов) на русском: дружелюбно, лёгкий юмор,\n"
-        "упомяни условия (перефразируй) и дай практический совет (зонт/SPF/слои/туман/ветер).\n"
-        "Не упоминай названия городов, ориентируйся на audience (одесситам/нидерландцам/жителям польши/«у вас»).\n"
-        "Без эмодзи, без приветствий, без хэштегов. Верни строго JSON: "
-        "{\"items\":[{\"city\":\"...\",\"comment\":\"...\"}]}."
+        "Ты создаёшь набор комментариев о погоде для разных городов.\n\n"
+        "ДАННЫЕ В JSON:\n"
+        f"{json.dumps(enriched, ensure_ascii=False, indent=2)}\n\n"
+        "ТРЕБОВАНИЯ ДЛЯ КАЖДОГО ГОРОДА:\n"
+        "- ОДНА фраза 8-16 слов на русском\n"
+        "- Дружелюбно, с лёгким юмором\n"
+        "- Упомяни погодные условия (перефразируй)\n"
+        "- Включи практический совет из hint\n"
+        "- Ориентируйся на audience (не упоминай названия городов)\n"
+        "- Без эмодзи, без приветствий\n"
+        "- Каждая фраза должна быть уникальной по структуре\n\n"
+        "ФОРМАТ ОТВЕТА - строго JSON:\n"
+        '{"items": [{"city": "Название города", "comment": "сгенерированная фраза"}]}\n\n'
+        "ПРИМЕР:\n"
+        '{"items": [\n  {"city": "Леуварден", "comment": "Сегодня прохладно и облачно — идеальная погода для тёплого свитера и неторопливой прогулки"},\n  {"city": "Одесса", "comment": "Солнечно и тепло — отличный повод надеть что-то лёгкое и насладиться днём"}\n]}'
     )
-    raw = _intel_chat(prompt + "\n\n" + json.dumps(enriched, ensure_ascii=False), max_tokens=420, temperature=0.9)
+    
+    raw = _intel_chat(prompt, max_tokens=600, temperature=0.9)
     data = None
     m = re.search(r"\{[\s\S]*\}", raw)
     if m:
@@ -391,7 +458,7 @@ def ai_generate_comments_batch_intel(city_items):
         if city and cm and is_russian_strict(cm):
             out[city] = cm
 
-    # точечная перегенерация и дедупликация по «скелету»
+    # Дедупликация и перегенерация
     for it in city_items:
         city = it["city"]
         desc = it["desc"]
@@ -408,25 +475,68 @@ def ai_generate_comments_batch_intel(city_items):
 
 # Пожелание: 180–240 символов
 def ai_generate_wish_240_intel() -> str:
+    tz = ZoneInfo(os.getenv("TZ", "Europe/Amsterdam"))
+    now_local = datetime.now(tz)
+    date_human = human_ru_date(now_local)
+    weekday = WEEKDAY_RU[now_local.weekday()]
+
     prompt = (
-        "Напиши короткое пожелание на день (180-240 символов) на русском языке. "
-        "Стиль: разговорный, естественный, с лёгким юмором. "
-        "Можно использовать 1-2 уместных эмодзи. "
-        "Без обращений по имени, без приветствий. "
-        "Примеры хорошего тона: 'Пусть день сложится как пазл — все детали на своих местах 😊' "
-        "или 'Если встретишь непогоду — улыбнись, она точно растеряется ☔️'"
+        "Ты создаёшь тёплое пожелание на день для семейного чата с выдуманной приметой.\n\n"
+        "СТРУКТУРА:\n"
+        "1. Основное пожелание (180-280 символов)\n"
+        "2. Пустая строка\n"
+        f"3. Цитата: <blockquote>Примета на {date_human}: [текст приметы]</blockquote>\n\n"
+        "ТРЕБОВАНИЯ К ПОЖЕЛАНИЮ:\n"
+        "- Тёплый, поддерживающий тон\n"
+        "- Разговорный естественный стиль\n"
+        "- Лёгкий ненавязчивый юмор\n"
+        "- Про мелкие радости и простые моменты\n"
+        "- 0-2 уместных эмодзи\n"
+        "- Без клише и шаблонных фраз\n\n"
+        "ТРЕБОВАНИЯ К ПРИМЕТЕ:\n"
+        "- Выдуманная, бытовая, забавная\n"
+        "- 6-16 слов\n"
+        "- Про обычные вещи: кофе, ключи, погода, домашние дела\n"
+        "- Не категоричная, с элементом игры\n"
+        "- Лёгкая и запоминающаяся\n\n"
+        "ПРИМЕРЫ ХОРОШИХ ПРИМЕТ:\n"
+        f"«Если утренний кофе оказался особенно вкусным — весь день сложится удачно»\n"
+        f"«Нашёл монету по дороге — жди приятного сюрприза после обеда»\n"
+        f"«Услышал пение птиц из окна — день пройдёт под знаком лёгкости»\n\n"
+        "Сгенерируй полный текст в требуемом формате:"
     )
+
     for _ in range(3):
-        raw = _intel_chat(prompt, max_tokens=180, temperature=0.85)
+        raw = _intel_chat(prompt, max_tokens=500, temperature=0.8)
         wish = sanitize_wish(raw)
-        if wish and is_russian_strict(wish) and 160 <= len(wish) <= 240:
-            return wish
-    # фоллбэк (чуть длиннее прежних)
+        if wish:
+            # Обеспечиваем правильное расположение blockquote
+            if "<blockquote>" in wish:
+                parts = wish.split("<blockquote>")
+                if len(parts) > 1:
+                    head = "<blockquote>".join(parts[:-1]).strip()
+                    last = "<blockquote>" + parts[-1]
+                    if "</blockquote>" in last:
+                        last = last[:last.find("</blockquote>")+13]
+                    # Убираем лишние blockquote из основной части
+                    head = re.sub(r"<blockquote>.*?</blockquote>", "", head, flags=re.S)
+                    head = re.sub(r"\n{2,}", "\n\n", head).strip()
+                    wish = (head + "\n\n" + last).strip()
+            
+            # Проверка длины
+            if 220 <= len(wish) <= 400:
+                return wish
+
+    # Улучшенный фоллбэк
     fb = (
-        "План на сегодня простой и добрый: важное — по шагам, приятное — между делом; "
-        "если подует встречный ветер — добавь улыбку и маленькую паузу, она творит чудеса 😉✨"
+        f"Пусть {weekday} порадует маленькими неожиданностями — тёплой чашкой чая, "
+        f"добрым словом и моментом тишины среди суеты. \n\n"
+        f"<blockquote>Примета на {date_human}: если первая мысль утром была светлой — весь день пройдёт на позитивной волне</blockquote>"
     )
     return sanitize_wish(fb)
+
+
+
 
 # Отрисовка блока погоды: эмодзи после температуры, пустая строка между пунктами, без двоеточия
 def build_weather_block(weather_info, comments_by_city):
@@ -454,16 +564,10 @@ def build_weather_block(weather_info, comments_by_city):
 
 
 # 3) Универсальный рендер дайджеста (вынесено из send_morning)
-async def send_digest(context: ContextTypes.DEFAULT_TYPE):
+async def send_digest(context: ContextTypes.DEFAULT_TYPE, chat_id: str | int):
     tz = ZoneInfo(TZ_NAME)
     now_local = datetime.now(tz)
     today_local = now_local.date()
-
-    job_data = getattr(context, "job", None)
-    chat_id = (job_data.data if job_data else {}).get("chat_id")
-    if not chat_id:
-        # на случай прямого вызова без JobQueue — используем дефолт из .env
-        chat_id = CHAT_ID
 
     # Погода
     weather_info = {}
@@ -497,6 +601,7 @@ async def send_digest(context: ContextTypes.DEFAULT_TYPE):
 
     caption = "\n\n".join([header, weather_block, holidays_block, wish])
     caption = strip_unsupported_html(caption)  
+    caption = caption.replace("\n<blockquote>", "\n\n<blockquote>")
     photo_url = get_photo_for_weather(photo_desc_for_cover) or "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee"
     await context.bot.send_photo(chat_id=chat_id, photo=photo_url, caption=caption, parse_mode=ParseMode.HTML)
 
@@ -505,7 +610,6 @@ async def send_morning(context: ContextTypes.DEFAULT_TYPE, custom_holidays_for_d
     tz = ZoneInfo(TZ_NAME)
     now_local = datetime.now(tz)            # было: today_local = datetime.now(tz).date()
     today_local = now_local.date()
-    chat_id = context.job.data["chat_id"]
 
     logging.info("=== DEBUG: Testing custom holidays ===")
     test_date = datetime.now().date()
@@ -569,6 +673,8 @@ async def send_morning(context: ContextTypes.DEFAULT_TYPE, custom_holidays_for_d
     photo_url = get_photo_for_weather(photo_desc_for_cover) or "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee"
     await context.bot.send_photo(chat_id=CHAT_ID, photo=photo_url, caption=caption, parse_mode=ParseMode.HTML)
 
+
+
 # 4) Обработчик «что сегодня?»
 async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
     # Отвечаем в тот же чат, где спросили
@@ -598,8 +704,19 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
     # Регистрация обработчика текста «что сегодня?» (регистронезависимо, в любом месте фразы)
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
+
+     # ДОБАВЬТЕ ЭТОТ ОБРАБОТЧИК ДЛЯ ЧАТА:
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            lambda update, context: chat_handler.handle_chat_message(update, context)
+        )
+    )
+    
     application.post_init = on_startup
     application.run_polling(close_loop=False)
+
+    
 
 from flask import Flask
 from threading import Thread
@@ -624,6 +741,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram-бота
     main()
+
 
 
 
