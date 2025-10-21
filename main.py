@@ -5,7 +5,7 @@ import random
 import requests
 import logging
 import atexit
-from telegram import update
+from telegram import Update
 from datetime import datetime, time, date
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -780,6 +780,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
