@@ -7,6 +7,30 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
+def get_boltun_reply(user_name, message):
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"Ты — Болтун, тёплый и живой собеседник. "
+                    f"Общайся с пользователями как с друзьями, без излишней вежливости и формальности. "
+                    f"Пиши естественно, иногда коротко, иногда чуть с юмором. "
+                    f"Не задавай вопрос после каждого ответа, если это неуместно. "
+                    f"Если человек говорит что-то грустное — поддержи, но не как психолог, а как близкий приятель. "
+                    f"Используй иногда смайлики, но не после каждого предложения."
+                )
+            },
+            {"role": "user", "content": f"{user_name}: {message}"}
+        ]
+    )
+
+    return response.choices[0].message.content.strip()
+
 class ChatHandler:
     def __init__(self, intel_chat_function, memory_file="memory_cache.json"):
         self.intel_chat = intel_chat_function
@@ -148,7 +172,7 @@ class ChatHandler:
         )
         
         try:
-            response = self.intel_chat(prompt, max_tokens=200, temperature=0.8)
+            response = get_boltun_reply(user_name, message_text)
             if response and len(response.strip()) > 5:
                 # Сохраняем контекст
                 conversation_context.append(f"Бот: {response}")
