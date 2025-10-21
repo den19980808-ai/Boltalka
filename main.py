@@ -176,7 +176,19 @@ def strip_unsupported_html(s: str) -> str:
     s = re.sub(r"</?([A-Za-z0-9\-]+)(\s+[^>]*)?>", _repl, s)
     return s
 
+def should_respond(self, update: Update) -> bool:
+    if not update.message or not update.message.text:
+        return False
 
+    text = update.message.text.lower()
+    logging.info(f"📨 Получено сообщение: {text}")
+
+    if re.search(r'\bболтун\b', text, re.IGNORECASE):
+        logging.info("⚡ Обнаружен триггер 'Болтун'")
+        return True
+    else:
+        logging.info("🚫 Триггер не найден")
+        return False
 
 # ====== ИИ-приветствие «Доброе утро» ======
 
@@ -766,6 +778,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
