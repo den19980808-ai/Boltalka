@@ -604,6 +604,7 @@ async def send_digest(context: ContextTypes.DEFAULT_TYPE, chat_id: str | int):
     caption = caption.replace("\n<blockquote>", "\n\n<blockquote>")
     photo_url = get_photo_for_weather(photo_desc_for_cover) or "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee"
     await context.bot.send_photo(chat_id=chat_id, photo=photo_url, caption=caption, parse_mode=ParseMode.HTML)
+    pass
 
 # --- основная отправка
 async def send_morning(context: ContextTypes.DEFAULT_TYPE, custom_holidays_for_date, load_custom_holidays):
@@ -672,7 +673,7 @@ async def send_morning(context: ContextTypes.DEFAULT_TYPE, custom_holidays_for_d
     caption = strip_unsupported_html(caption)  
     photo_url = get_photo_for_weather(photo_desc_for_cover) or "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee"
     await context.bot.send_photo(chat_id=CHAT_ID, photo=photo_url, caption=caption, parse_mode=ParseMode.HTML)
-
+    pass
 
 
 # 4) Обработчик «что сегодня?»
@@ -696,16 +697,31 @@ async def on_startup(app: Application):
     data={"chat_id": CHAT_ID}
 )
     logging.info("Daily job scheduled at 08:00 %s", TZ_NAME)
+    pass
 
    
     
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "Bot is running fine ✅"
+
+@flask_app.route("/health")
+def health():
+    return "OK", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8000))
+    flask_app.run(host="0.0.0.0", port=port)
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
-    # Регистрация обработчика текста «что сегодня?» (регистронезависимо, в любом месте фразы)
+    
+    # Регистрация обработчика текста «что сегодня?»
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
-
-     # ДОБАВЬТЕ ЭТОТ ОБРАБОТЧИК ДЛЯ ЧАТА:
+    
+    # Обработчик для чата
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -716,30 +732,35 @@ def main():
     application.post_init = on_startup
     application.run_polling(close_loop=False)
 
-    
-
-from flask import Flask
-from threading import Thread
-
-# === Flask "заглушка" для Koyeb ===
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return "Bot is running fine ✅"
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8000)
-
-
 if __name__ == "__main__":
-    import asyncio
-    from threading import Thread
-
+    # Инициализация чат-обработчика ПЕРЕД запуском
+    from chat_handler import init_chat_handler
+    
+    # Убедитесь что эта функция определена выше в коде
+    def _intel_chat(prompt: str, max_tokens: int = 280, temperature: float = 0.8) -> str:
+        try:
+            client = _get_openai()
+            resp = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            logging.warning("OpenAI error: %s", e)
+            return ""
+    
+    # Инициализируем обработчик чата
+    chat_handler = init_chat_handler(_intel_chat)
+    
     # Запускаем Flask в отдельном потоке
-    Thread(target=run_flask).start()
-
-    # Запускаем Telegram-бота
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logging.info("🌐 Flask запущен на порту %s", os.environ.get("PORT", 8000))
+    
+    # Запускаем Telegram-бота в основном потоке
+    logging.info("🤖 Запускаем Telegram бота...")
     main()
 
 
