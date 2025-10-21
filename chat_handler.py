@@ -1,16 +1,52 @@
 import re
 import logging
 import random
+import json
+import os
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
 class ChatHandler:
-    def __init__(self, intel_chat_function):
+    def __init__(self, intel_chat_function, memory_file="memory_cache.json"):
         self.intel_chat = intel_chat_function
         self.conversations = {}  # Текущие диалоги
         self.user_stats = {}     # Статистика по пользователям
+        self.memory_file = memory_file
+        self.memory = self._load_memory()  # 🧠 Загружаем память из файла
         
+    # === 🧠 Блок работы с памятью ===
+    def _load_memory(self):
+        """Загружает память пользователей из файла."""
+        if os.path.exists(self.memory_file):
+            try:
+                with open(self.memory_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logging.error(f"Ошибка загрузки памяти: {e}")
+        return {}
+
+    def _save_memory(self):
+        """Сохраняет память пользователей в файл."""
+        try:
+            with open(self.memory_file, "w", encoding="utf-8") as f:
+                json.dump(self.memory, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.error(f"Ошибка сохранения памяти: {e}")
+
+    def remember(self, user_id: int, key: str, value: str):
+        """Добавляет или обновляет запись о пользователе."""
+        if str(user_id) not in self.memory:
+            self.memory[str(user_id)] = {}
+        self.memory[str(user_id)][key] = value
+        self._save_memory()
+
+    def recall(self, user_id: int, key: str):
+        """Извлекает запись о пользователе."""
+        return self.memory.get(str(user_id), {}).get(key)
+
+    # === конец блока памяти ===
+
     def _get_triggers(self):
         """Расширенный список триггеров"""
         return [
@@ -61,6 +97,18 @@ class ChatHandler:
         message_text = update.message.text
         user_name = user.first_name or "друг"
         user_id = user.id
+        known_name = self.recall(user_id, "name")
+        mood = self.recall(user_id, "mood")
+
+        # Если имя ещё не сохранено — запоминаем
+        if not known_name:
+            self.remember(user_id, "name", user_name)
+
+        # Анализируем настроение по тексту
+        if any(word in message_text.lower() for word in ["груст", "устал", "плохо"]):
+            self.remember(user_id, "mood", "грустный")
+        elif any(word in message_text.lower() for word in ["супер", "отлично", "весело", "классно"]):
+            self.remember(user_id, "mood", "радостный")
         
         # Определяем контекст разговора
         conversation_context = self.conversations.get(user_id, [])
@@ -71,9 +119,18 @@ class ChatHandler:
             conversation_context = conversation_context[-6:]
             
         context_text = "\n".join(conversation_context[-3:])  # Берем последние 3 реплики
+
+        # Включаем это в контекст
+        memory_context = ""
+        if known_name:
+            memory_context += f"Ты уже знаешь, что собеседника зовут {known_name}. "
+        if mood:
+            memory_context += f"Ранее он был в {mood} настроении. "
+
         
         prompt = (
             f"Ты — дружелюбный собеседник в семейном чате. Тебе пишет {user_name}.\n\n"
+            f"{memory_context}\n"
             f"КОНТЕКСТ РАЗГОВОРА:\n{context_text}\n\n"
             "ТВОЯ РОЛЬ:\n"
             "- Поддерживающий член семьи\n" 
