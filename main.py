@@ -748,13 +748,6 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         logging.info("🚫 Триггер не найден")
         
-async def debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = getattr(update, "message", None) and update.message.text
-    logging.info(f"DEBUG: {txt}")
-
-# ...
-# отладка — последней
-application.add_handler(MessageHandler(filters.ALL, debug_log))
 
 # === Точка входа ===
 def main():
@@ -799,6 +792,7 @@ if __name__ == "__main__":
     # Запускаем Telegram-бота в основном потоке
     logging.info("🤖 Запускаем Telegram бота...")
     main()
+
 
 
 
