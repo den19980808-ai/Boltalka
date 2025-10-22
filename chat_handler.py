@@ -77,6 +77,132 @@ class ChatHandler:
 
     # === конец блока памяти ===
 
+    async def handle_photo_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик сообщений с изображениями"""
+        try:
+            if not update.message or not update.message.photo:
+                return
+                
+            # Проверяем анти-флуд
+            if not self._check_photo_flood_protection(update):
+                return
+                
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id, 
+                action="typing"
+            )
+            
+            # Получаем фото (берем самое большое качество)
+            photo = update.message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            
+            # Скачиваем изображение
+            photo_bytes = await file.download_as_bytearray()
+            
+            # Анализируем изображение
+            analysis = await self.analyze_image(photo_bytes, update.message.from_user.first_name)
+            
+            if analysis:
+                await update.message.reply_text(
+                    analysis,
+                    reply_to_message_id=update.message.message_id
+                )
+                logging.info(f"Прокомментировал фото от {update.message.from_user.first_name}")
+                
+        except Exception as e:
+            logging.error(f"Ошибка обработки фото: {e}")
+            try:
+                await update.message.reply_text(
+                    "Интересное изображение! К сожалению, не могу его проанализировать прямо сейчас 🖼️",
+                    reply_to_message_id=update.message.message_id
+                )
+            except:
+                pass
+
+    def _check_photo_flood_protection(self, update: Update) -> bool:
+        """Защита от флуда изображениями"""
+        user_id = update.message.from_user.id
+        now = datetime.now()
+        
+        if user_id in self.user_stats:
+            last_photo_time = self.user_stats[user_id].get('last_photo_interaction')
+            if last_photo_time and (now - last_photo_time) < timedelta(seconds=30):
+                return False
+                
+        # Обновляем статистику
+        if user_id not in self.user_stats:
+            self.user_stats[user_id] = {}
+        self.user_stats[user_id]['last_photo_interaction'] = now
+        self.user_stats[user_id]['photo_count'] = self.user_stats[user_id].get('photo_count', 0) + 1
+        
+        return True
+
+    async def analyze_image(self, image_bytes: bytes, user_name: str) -> str:
+        """Анализирует изображение и генерирует комментарий"""
+        try:
+            # Кодируем изображение в base64
+            base64_image = base64.b64encode(image_bytes).decode('utf-8')
+            
+            # Используем GPT-4 Vision для анализа
+            analysis = await self._analyze_with_gpt4_vision(base64_image, user_name)
+            return analysis
+            
+        except Exception as e:
+            logging.error(f"Ошибка анализа изображения: {e}")
+            return self._get_fallback_photo_response(user_name)
+
+    async def _analyze_with_gpt4_vision(self, base64_image: str, user_name: str) -> str:
+        """Анализ изображения через GPT-4 Vision"""
+        from openai import OpenAI
+        import os
+        
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",  # Модель с поддержкой зрения
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — Болтун, тёплый и живой собеседник в семейном чате. "
+                        "Ты получаешь изображения от пользователей и комментируешь их в своём стиле: "
+                        "дружелюбно, с юмором, тепло. "
+                        "Опиши что видишь на изображении и добавь свой комментарий. "
+                        "Будь естественным, как будто смотришь фото с друзьями. "
+                        "Используй 1-2 эмодзи. Ответ должен быть коротким (1-3 предложения)."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text", 
+                            "text": f"Привет! Пользователь {user_name} отправил это фото. Опиши что ты видишь и прокомментируй в своём стиле:"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=300
+        )
+        
+        return response.choices[0].message.content.strip()
+
+    def _get_fallback_photo_response(self, user_name: str) -> str:
+        """Запасные ответы для фото"""
+        responses = [
+            f"Ого, {user_name}! Интересное фото! 🖼️ Что это за момент?",
+            f"Классное изображение, {user_name}! Расскажи о нём? 📸",
+            f"Прикольно, {user_name}! Нравится мне эта картинка! 😊",
+            f"Интересно, {user_name}! Что на этом фото? 🎨",
+        ]
+        return random.choice(responses)
+
     def _get_triggers(self):
         """Расширенный список триггеров"""
         return [
