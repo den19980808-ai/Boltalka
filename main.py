@@ -52,7 +52,7 @@ SCAN_COUNTRIES_ENV = os.getenv(
 SCAN_LIMIT = int(os.getenv("SCAN_LIMIT", "2"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-
+logging.info(f"🧠 Текущее состояние памяти: {handler.memory}")
 # --- города RU:EN
 CITIES = []
 for pair in CITIES_ENV.split(","):
@@ -814,7 +814,7 @@ def main():
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
 
     # триггер "Болтун"
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler.handle_chat_message))
 
     # отладка — последней
     application.add_handler(
@@ -852,6 +852,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
