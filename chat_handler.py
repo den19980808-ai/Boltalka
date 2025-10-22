@@ -3,6 +3,8 @@ import logging
 import random
 import json
 import os
+import base64 
+import requests 
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
