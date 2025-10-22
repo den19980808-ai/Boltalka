@@ -819,6 +819,12 @@ def main():
     # Обработчик фото
     application.add_handler(MessageHandler(filters.PHOTO, chat_handler.handle_photo_message))
 
+     # Команда для просмотра памяти - ДОБАВЬТЕ ЭТО
+    application.add_handler(MessageHandler(
+        filters.Regex(r"(?i)(память|что помнишь|memory)"), 
+        chat_handler.show_memory_command
+    ))
+
     # отладка — последней
     application.add_handler(
         MessageHandler(
@@ -855,6 +861,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
