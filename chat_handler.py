@@ -47,33 +47,112 @@ class ChatHandler:
         
     # === 🧠 Блок работы с памятью ===
     def _load_memory(self):
-        """Загружает память пользователей из файла."""
+        """Загружает память пользователей из файла с детальным логированием"""
         if os.path.exists(self.memory_file):
             try:
                 with open(self.memory_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    memory_data = json.load(f)
+                user_count = len(memory_data)
+                total_entries = sum(len(entries) for entries in memory_data.values())
+                logging.info(f"🧠 Загружена память: {user_count} пользователей, {total_entries} записей")
+                
+                # Логируем содержимое памяти для отладки
+                for user_id, entries in memory_data.items():
+                    logging.info(f"🧠 Пользователь {user_id}: {len(entries)} записей")
+                    for key, value in entries.items():
+                        logging.info(f"   📝 {key}: {value}")
+                
+                return memory_data
             except Exception as e:
-                logging.error(f"Ошибка загрузки памяти: {e}")
+                logging.error(f"❌ Ошибка загрузки памяти: {e}")
+        else:
+            logging.info("🧠 Файл памяти не найден, создаём новую память")
         return {}
 
     def _save_memory(self):
-        """Сохраняет память пользователей в файл."""
+        """Сохраняет память пользователей в файл с логированием"""
         try:
+            user_count = len(self.memory)
+            total_entries = sum(len(entries) for entries in self.memory.values())
+            
             with open(self.memory_file, "w", encoding="utf-8") as f:
                 json.dump(self.memory, f, ensure_ascii=False, indent=2)
+            
+            logging.info(f"💾 Память сохранена: {user_count} пользователей, {total_entries} записей")
+            
+            # Логируем последнее состояние памяти
+            for user_id, entries in self.memory.items():
+                logging.info(f"💾 Пользователь {user_id}: {len(entries)} записей")
+                
         except Exception as e:
-            logging.error(f"Ошибка сохранения памяти: {e}")
+            logging.error(f"❌ Ошибка сохранения памяти: {e}")
 
     def remember(self, user_id: int, key: str, value: str):
-        """Добавляет или обновляет запись о пользователе."""
-        if str(user_id) not in self.memory:
-            self.memory[str(user_id)] = {}
-        self.memory[str(user_id)][key] = value
+        """Добавляет или обновляет запись о пользователе с логированием"""
+        user_id_str = str(user_id)
+        old_value = None
+        
+        if user_id_str not in self.memory:
+            self.memory[user_id_str] = {}
+            logging.info(f"🧠 Создан новый пользователь: {user_id_str}")
+        else:
+            old_value = self.memory[user_id_str].get(key)
+        
+        self.memory[user_id_str][key] = value
         self._save_memory()
+        
+        if old_value:
+            logging.info(f"🔄 Обновлена запись для {user_id_str}: {key} = '{old_value}' -> '{value}'")
+        else:
+            logging.info(f"✅ Новая запись для {user_id_str}: {key} = '{value}'")
 
     def recall(self, user_id: int, key: str):
-        """Извлекает запись о пользователе."""
-        return self.memory.get(str(user_id), {}).get(key)
+        """Извлекает запись о пользователе с логированием"""
+        user_id_str = str(user_id)
+        value = self.memory.get(user_id_str, {}).get(key)
+        
+        if value:
+            logging.info(f"🔍 Найдена запись для {user_id_str}: {key} = '{value}'")
+        else:
+            logging.info(f"❓ Запись не найдена для {user_id_str}: {key}")
+            
+        return value
+
+    def get_user_memory(self, user_id: int):
+        """Возвращает всю память о пользователе для отладки"""
+        user_id_str = str(user_id)
+        memory = self.memory.get(user_id_str, {})
+        logging.info(f"📊 Полная память пользователя {user_id_str}: {len(memory)} записей")
+        for key, value in memory.items():
+            logging.info(f"   📖 {key}: {value}")
+        return memory
+
+    def remember_conversation_topic(self, user_id: int, message: str):
+        """Запоминает тему разговора на основе сообщения"""
+        try:
+            # Простой анализ темы (можно улучшить с помощью ИИ)
+            topics = {
+                'работа': ['работа', 'проект', 'задача', 'начальник', 'коллега'],
+                'семья': ['семья', 'родители', 'дети', 'муж', 'жена', 'ребенок'],
+                'отдых': ['отпуск', 'отдых', 'каникулы', 'путешествие', 'поездка'],
+                'хобби': ['хобби', 'увлечение', 'рисование', 'музыка', 'спорт'],
+                'здоровье': ['здоровье', 'болею', 'врач', 'боль', 'лекарство']
+            }
+            
+            message_lower = message.lower()
+            current_topic = None
+            
+            for topic, keywords in topics.items():
+                if any(keyword in message_lower for keyword in keywords):
+                    current_topic = topic
+                    break
+            
+            if current_topic:
+                self.remember(user_id, "last_topic", current_topic)
+                logging.info(f"🏷️  Запомнена тема разговора для {user_id}: {current_topic}")
+                
+        except Exception as e:
+            logging.error(f"❌ Ошибка анализа темы разговора: {e}")
 
     # === конец блока памяти ===
 
@@ -226,6 +305,14 @@ class ChatHandler:
             
         user_id = update.message.from_user.id
         message_text = update.message.text.lower()
+
+         # Запоминаем активность пользователя
+        self.remember(user_id, "last_activity", datetime.now().isoformat())
+        self.remember(user_id, "total_messages", 
+                     int(self.recall(user_id, "total_messages") or 0) + 1)
+        
+        # Запоминаем тему разговора
+        self.remember_conversation_topic(user_id, message_text)
         
         # Проверяем триггеры
         triggers = '|'.join(self._get_triggers())
@@ -236,7 +323,7 @@ class ChatHandler:
         now = datetime.now()
         if user_id in self.user_stats:
             last_time = self.user_stats[user_id].get('last_interaction')
-            if last_time and (now - last_time) < timedelta(seconds=20):
+            if last_time and (now - last_time) < timedelta(seconds=10):
                 return False
                 
         # Обновляем статистику
@@ -253,18 +340,32 @@ class ChatHandler:
         message_text = update.message.text
         user_name = user.first_name or "друг"
         user_id = user.id
+
+        # Логируем начало обработки с памятью
+        logging.info(f"🧠 Начало обработки сообщения от {user_name} (ID: {user_id})")
+
+        # Получаем всю память о пользователе для отладки
+        self.get_user_memory(user_id)
+        
         known_name = self.recall(user_id, "name")
         mood = self.recall(user_id, "mood")
+        last_topic = self.recall(user_id, "last_topic")
+        total_messages = self.recall(user_id, "total_messages")
 
         # Если имя ещё не сохранено — запоминаем
         if not known_name:
             self.remember(user_id, "name", user_name)
 
         # Анализируем настроение по тексту
-        if any(word in message_text.lower() for word in ["груст", "устал", "плохо"]):
+        if any(word in message_text.lower() for word in ["груст", "устал", "плохо", "уныл", "тоск"]):
             self.remember(user_id, "mood", "грустный")
-        elif any(word in message_text.lower() for word in ["супер", "отлично", "весело", "классно"]):
+            mood = "грустный"
+        elif any(word in message_text.lower() for word in ["супер", "отлично", "весело", "классно", "рад", "счастлив"]):
             self.remember(user_id, "mood", "радостный")
+            mood = "радостный"
+        elif any(word in message_text.lower() for word in ["злой", "сердит", "разозлил", "бесит"]):
+            self.remember(user_id, "mood", "сердитый")
+            mood = "сердитый"
         
         # Определяем контекст разговора
         conversation_context = self.conversations.get(user_id, [])
@@ -276,12 +377,21 @@ class ChatHandler:
             
         context_text = "\n".join(conversation_context[-3:])  # Берем последние 3 реплики
 
-        # Включаем это в контекст
-        memory_context = ""
+         # Собираем контекст из памяти
+        memory_context_parts = []
         if known_name:
-            memory_context += f"Ты уже знаешь, что собеседника зовут {known_name}. "
+            memory_context_parts.append(f"Собеседника зовут {known_name}.")
         if mood:
-            memory_context += f"Ранее он был в {mood} настроении. "
+            memory_context_parts.append(f"Сейчас он в {mood} настроении.")
+        if last_topic:
+            memory_context_parts.append(f"Ранее обсуждали тему: {last_topic}.")
+        if total_messages:
+            memory_context_parts.append(f"Всего сообщений от него: {total_messages}.")
+            
+        memory_context = " ".join(memory_context_parts)
+
+        # Логируем собранный контекст
+        logging.info(f"🧠 Собранный контекст: {memory_context}")
 
         
         prompt = (
@@ -309,9 +419,14 @@ class ChatHandler:
                 # Сохраняем контекст
                 conversation_context.append(f"Бот: {response}")
                 self.conversations[user_id] = conversation_context
+                
+                # Запоминаем последний ответ бота
+                self.remember(user_id, "last_bot_response", response)
+                
+                logging.info(f"✅ Сгенерирован ответ с использованием памяти")
                 return response.strip()
         except Exception as e:
-            logging.error(f"Ошибка генерации контекстного ответа: {e}")
+            logging.error(f"❌ Ошибка генерации контекстного ответа: {e}")
             
         return self._get_fallback_response(user_name)
     
@@ -357,12 +472,26 @@ class ChatHandler:
                     reply_to_message_id=update.message.message_id
                 )
                 
-                logging.info(f"Ответил {update.message.from_user.first_name}: {response[:50]}...")
+                logging.info(f"✅ Ответил {update.message.from_user.first_name} с использованием памяти")
                 
         except Exception as e:
             logging.error(f"Ошибка обработки сообщения: {e}")
 
-        logging.info(f"🧠 Текущее состояние памяти: {handler.memory}")
+
+# === Команда для просмотра памяти ===
+    async def show_memory_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для просмотра того, что бот запомнил о пользователе"""
+        user_id = update.message.from_user.id
+        user_memory = self.get_user_memory(user_id)
+        
+        if user_memory:
+            memory_text = "🧠 Что я о тебе помню:\n\n"
+            for key, value in user_memory.items():
+                memory_text += f"• {key}: {value}\n"
+        else:
+            memory_text = "🤔 Я ещё ничего не знаю о тебе. Давай пообщаемся!"
+            
+        await update.message.reply_text(memory_text)
 
 # Глобальные экземпляры
 _chat_handler = None
