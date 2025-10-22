@@ -816,6 +816,9 @@ def main():
     # триггер "Болтун" - исправленная строка
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
 
+    # Обработчик фото
+    application.add_handler(MessageHandler(filters.PHOTO, chat_handler.handle_photo_message))
+
     # отладка — последней
     application.add_handler(
         MessageHandler(
@@ -852,6 +855,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
