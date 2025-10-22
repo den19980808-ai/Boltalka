@@ -813,8 +813,8 @@ def main():
     # "что сегодня?"
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
 
-    # триггер "Болтун"
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler.handle_chat_message))
+    # триггер "Болтун" - исправленная строка
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
 
     # отладка — последней
     application.add_handler(
@@ -852,6 +852,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
