@@ -5,6 +5,7 @@ import random
 import requests
 import logging
 import atexit
+import base64
 from telegram import Update
 from datetime import datetime, time, date
 from zoneinfo import ZoneInfo
@@ -861,6 +862,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
