@@ -236,6 +236,8 @@ class ChatHandler:
         except Exception as e:
             logging.error(f"Ошибка обработки сообщения: {e}")
 
+        logging.info(f"🧠 Текущее состояние памяти: {handler.memory}")
+
 # Глобальные экземпляры
 _chat_handler = None
 
