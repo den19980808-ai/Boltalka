@@ -200,7 +200,7 @@ def strip_unsupported_html(s: str) -> str:
     s = re.sub(r"</?([A-Za-z0-9\-]+)(\s+[^>]*)?>", _repl, s)
     return s
 
-def should_respond(self, update: Update) -> bool:
+def should_respond(update: Update) -> bool:
     """Проверяет, стоит ли отвечать на сообщение"""
     if not update.message or not update.message.text:
         return False
@@ -686,7 +686,7 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         # Проверяем, содержит ли сообщение триггер "болтун"
-        if re.search(r'\bболтун\b', message_text, re.IGNORECASE):
+        if should_respond(update):
             logging.info(f"⚡ Обнаружен триггер 'Болтун' в сообщении: {message_text}")
             
             # Отправляем действие "печатает"
@@ -966,6 +966,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
