@@ -903,13 +903,13 @@ def main():
     # Команда для просмотра истории - ДОБАВЬТЕ ЭТО
     application.add_handler(MessageHandler(
         filters.Regex(r"(?i)(история|history|историю)"), 
-        chat_handler.show_history_command
+        chat_handler_instance.show_history_command
     ))
 
     # Команда для экспорта истории - ДОБАВЬТЕ ЭТО
     application.add_handler(MessageHandler(
         filters.Regex(r"(?i)(экспорт|export|скачать историю)"), 
-        chat_handler.export_history_command
+        chat_handler_instance.export_history_command
     ))
 
     # отладка — последней
@@ -948,6 +948,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
