@@ -883,7 +883,7 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
  # Получаем обработчик чата
-    chat_handler_instance = get_chat_handler()  # Используем эту переменную
+    chat_handler = get_chat_handler()  # Используем эту переменную
     
     # "что сегодня?"
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
@@ -948,6 +948,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
