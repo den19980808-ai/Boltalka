@@ -208,9 +208,26 @@ def should_respond(self, update: Update) -> bool:
     text = update.message.text.lower()
     logging.info(f"📨 Получено сообщение: {text}")
 
-    if re.search(r'\bболтун\b', text, re.IGNORECASE):
-        logging.info("⚡ Обнаружен триггер 'Болтун'")
-        return True
+    # Список триггеров для реакции
+    triggers = [
+        r'\b[Бб]олтун\w*',
+        r'\b[Пп]оболта\w+',
+        r'\b[Пп]оговори\w+', 
+        r'\b[Ээ]й\s*,\s*бот',
+        r'\b[Пп]ривет\s*,\s*бот',
+        r'\b[Бб]от\s*,\s*[Пп]ривет',
+        r'\b[Пп]риветствую',
+        r'\b[Пп]оздороваться',
+        r'\b[Вв]ася\w*',
+        r'\b[Вв]асилий\w*',
+        r'\b[Бб]олт\w*',
+    ]
+
+    # Проверяем каждый триггер
+    for trigger in triggers:
+        if re.search(trigger, text, re.IGNORECASE):
+            logging.info(f"⚡ Обнаружен триггер: {trigger}")
+            return True
     else:
         logging.info("🚫 Триггер не найден")
         return False
@@ -949,6 +966,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
