@@ -463,6 +463,91 @@ class ChatHandler:
         }
         
         return True
+
+        self.conversation_context = {}  # словарь для хранения контекста диалогов
+        
+    async def update_conversation_context(self, chat_id: str, last_bot_question: str = None):
+        """Обновляет контекст диалога"""
+        if chat_id not in self.conversation_context:
+            self.conversation_context[chat_id] = {
+                'last_bot_question': None,
+                'last_interaction_time': None,
+                'is_awaiting_reply': False
+            }
+        
+        if last_bot_question:
+            self.conversation_context[chat_id]['last_bot_question'] = last_bot_question
+            self.conversation_context[chat_id]['is_awaiting_reply'] = True
+        
+        self.conversation_context[chat_id]['last_interaction_time'] = datetime.now()
+    
+    def should_continue_conversation(self, chat_id: str, user_message: str) -> bool:
+        """Проверяет, является ли сообщение продолжением диалога"""
+        if chat_id not in self.conversation_context:
+            return False
+        
+        context = self.conversation_context[chat_id]
+        
+        # Проверяем, не прошло ли слишком много времени (например, 10 минут)
+        if context['last_interaction_time']:
+            time_diff = datetime.now() - context['last_interaction_time']
+            if time_diff.total_seconds() > 600:  # 10 минут
+                return False
+        
+        # Если бот ожидает ответа на свой вопрос
+        if context['is_awaiting_reply']:
+            return True
+        
+        # Дополнительная проверка: сообщение является ответом на вопрос бота
+        if context['last_bot_question'] and self._is_likely_response(user_message, context['last_bot_question']):
+            return True
+        
+        return False
+    
+    def _is_likely_response(self, user_message: str, bot_question: str) -> bool:
+        """Проверяет, похоже ли сообщение на ответ на вопрос бота"""
+        user_msg_lower = user_message.lower()
+        bot_question_lower = bot_question.lower()
+        
+        # Если в сообщении есть ответы на распространенные вопросы
+        response_indicators = [
+            # Ответы на вопросы "как дела?"
+            'нормально', 'хорошо', 'отлично', 'плохо', 'устал', 'устала',
+            # Ответы на вопросы "что делаешь?"
+            'работаю', 'отдыхаю', 'сижу', 'стою', 'иду', 'ем', 'сплю',
+            # Числовые ответы (возраст, количество и т.д.)
+            r'\d+',
+            # Короткие ответы
+            'да', 'нет', 'возможно', 'наверное',
+            # Ответы по теме предыдущего вопроса
+        ]
+        
+        # Проверяем наличие индикаторов ответа
+        for indicator in response_indicators:
+            if re.search(indicator, user_msg_lower):
+                return True
+        
+        # Дополнительная логика: если вопрос был о чем-то конкретном,
+        # и ответ содержит связанные слова
+        question_keywords = self._extract_keywords(bot_question_lower)
+        answer_keywords = self._extract_keywords(user_msg_lower)
+        
+        common_keywords = set(question_keywords) & set(answer_keywords)
+        if len(common_keywords) >= 1:  # Если есть хотя бы 1 общее ключевое слово
+            return True
+        
+        return False
+    
+    def _extract_keywords(self, text: str) -> list:
+        """Извлекает ключевые слова из текста (исключая стоп-слова)"""
+        stop_words = {'как', 'что', 'где', 'когда', 'почему', 'зачем', 'ты', 'вы', 'мне', 'тебе', 'вам'}
+        words = re.findall(r'\b[а-яё]{3,}\b', text)
+        return [word for word in words if word not in stop_words]
+    
+    def end_conversation(self, chat_id: str):
+        """Завершает текущий диалог"""
+        if chat_id in self.conversation_context:
+            self.conversation_context[chat_id]['is_awaiting_reply'] = False
     
     async def generate_contextual_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Генерация контекстного ответа с использованием памяти и истории"""
