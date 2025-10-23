@@ -228,9 +228,15 @@ def should_respond(update: Update) -> bool:
         if re.search(trigger, text, re.IGNORECASE):
             logging.info(f"⚡ Обнаружен триггер: {trigger}")
             return True
-    else:
-        logging.info("🚫 Триггер не найден")
-        return False
+
+ # Проверяем, является ли сообщение продолжением диалога
+    handler = get_chat_handler()
+    if handler and handler.should_continue_conversation(chat_id, text):
+        logging.info("🔄 Обнаружено продолжение диалога по контексту")
+        return True
+        
+    logging.info("🚫 Триггер не найден")
+    return False
 
 # ====== ИИ-приветствие «Доброе утро» ======
 
@@ -685,9 +691,9 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not message_text:
             return
             
-        # Проверяем, содержит ли сообщение триггер "болтун"
+        # Используем функцию should_respond для проверки всех триггеров и контекста
         if should_respond(update):
-            logging.info(f"⚡ Обнаружен триггер 'Болтун' в сообщении: {message_text}")
+            logging.info(f"⚡ Обнаружен триггер или продолжение диалога: {message_text}")
             
             # Отправляем действие "печатает"
             await context.bot.send_chat_action(
@@ -699,23 +705,37 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             handler = get_chat_handler()
             if handler:
                 response = await handler.generate_contextual_response(update, context)
+                
                 if response:
-                    await update.message.reply_text(
+                    # Отправляем ответ
+                    sent_message = await update.message.reply_text(
                         response,
                         reply_to_message_id=update.message.message_id
                     )
+                    
+                    # Обновляем контекст: если бот задал вопрос, отмечаем это
+                    if any(marker in response for marker in ['?', 'расскажи', 'скажи', 'как', 'что', 'почему']):
+                        await handler.update_conversation_context(chat_id, response)
+                    else:
+                        # Если это не вопрос, завершаем диалог
+                        handler.end_conversation(chat_id)
+                    
                     logging.info(f"✅ Ответ отправлен: {response[:50]}...")
                 else:
                     logging.warning("❌ Chat handler вернул пустой ответ")
+                    handler.end_conversation(chat_id)
             else:
                 logging.error("❌ Chat handler не инициализирован")
                 await update.message.reply_text("Извините, я временно недоступен 🛠️")
         else:
-            logging.info("🚫 Триггер 'Болтун' не найден в сообщении")
+            logging.info("🚫 Триггер не найден и диалог не продолжается")
             
     except Exception as e:
         logging.error(f"❌ Ошибка в обработчике on_trigger: {e}")
         try:
+            handler = get_chat_handler()
+            if handler:
+                handler.end_conversation(str(update.effective_chat.id))
             await update.message.reply_text("Произошла ошибка при обработке сообщения 🛠️")
         except:
             pass
@@ -927,6 +947,14 @@ def main():
         chat_handler_instance.export_history_command
     ))
 
+    # В main() добавьте этот обработчик:
+application.add_handler(MessageHandler(
+    filters.Regex(r"(?i)(новый диалог|сброс|забудь|start over)"), 
+    reset_conversation_context
+))
+
+
+
     # триггер "Болтун" - исправленная строка
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
     
@@ -938,9 +966,18 @@ def main():
         )
     )
 
+
+
     application.post_init = on_startup
     application.run_polling(close_loop=False)
 
+async def reset_conversation_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбрасывает контекст диалога"""
+    chat_id = str(update.effective_chat.id)
+    handler = get_chat_handler()
+    if handler:
+        handler.end_conversation(chat_id)
+        await update.message.reply_text("✅ Начинаем новый диалог! Что хочешь обсудить?")
 
 if __name__ == "__main__":
     # Запускаем Flask сервер для health checks в отдельном потоке
@@ -966,6 +1003,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
