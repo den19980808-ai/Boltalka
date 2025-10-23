@@ -389,8 +389,9 @@ def _intel_chat(prompt: str, max_tokens: int = 400, temperature: float = 0.8) ->
         logging.warning("OpenAI error: %s", e)
         return ""
 
-chat_handler = init_chat_handler(_intel_chat)
-atexit.register(chat_handler._save_memory)        
+# Инициализация chat_handler
+chat_handler_instance = init_chat_handler(_intel_chat)
+atexit.register(chat_handler_instance._save_memory) 
 
 # --- вспомогательное: нормализация для дедупликации (убираем город и ключевые слова погоды)
 KEY_WEATHER_WORDS = ["пасмур", "ясн", "облач", "дожд", "снег", "туман", "ветер"]
@@ -517,48 +518,6 @@ def ai_generate_comments_batch_intel(city_items):
             used_skel.add(sk)
     return out
 
-def get_seasonal_omens(now_local) -> list:
-    """Возвращает сезонные приметы в зависимости от времени года"""
-    month = now_local.month
-    base_omens = [
-        # базовые приметы (из предыдущего списка)
-    ]
-    
-    seasonal_omens = []
-    
-    # Зима (декабрь-февраль)
-    if month in [12, 1, 2]:
-        seasonal_omens = [
-            "если иней на деревьях — к сказочному дню",
-            "если снег хрустит под ногами — к ясным решениям",
-            "если увидел снежинку на рукаве — загадай желание"
-        ]
-    
-    # Весна (март-май)
-    elif month in [3, 4, 5]:
-        seasonal_omens = [
-            "если почки на деревьях набухли — к новым начинаниям",
-            "если услышал капель — пора обновлять планы",
-            "если первый одуванчик — загадай желание и подуй"
-        ]
-    
-    # Лето (июнь-август)
-    elif month in [6, 7, 8]:
-        seasonal_omens = [
-            "если раскаты грома — к громким успехам",
-            "если купаться в росе — к утренней бодрости",
-            "если ягоды поспели — к сладким моментам"
-        ]
-    
-    # Осень (сентябрь-ноябрь)
-    else:
-        seasonal_omens = [
-            "если листопад — отпускай старое без сожалений",
-            "если паутинка летит — к неожиданным связям",
-            "если туман утром — к таинственным событиям"
-        ]
-    
-    return base_omens + seasonal_omens
 
 # Пожелание: 180–240 символов
 def ai_generate_wish_240_intel() -> str:
@@ -566,7 +525,6 @@ def ai_generate_wish_240_intel() -> str:
     now_local = datetime.now(tz)
     date_human = human_ru_date(now_local)
     weekday = WEEKDAY_RU[now_local.weekday()]
-    omen_themes = get_seasonal_omens(now_local)
     
      # Расширенный список тем для примет
     omen_themes = [
@@ -613,8 +571,6 @@ def ai_generate_wish_240_intel() -> str:
 
 
     selected_omen = get_fresh_omen(omen_themes, USED_OMENS)
-    # Случайный выбор темы приметы
-    selected_omen = random.choice(omen_themes)
 
     prompt = (
         "Ты создаёшь тёплое пожелание на день для семейного чата с выдуманной приметой.\n\n"
@@ -933,12 +889,12 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
 
     # Обработчик фото
-    application.add_handler(MessageHandler(filters.PHOTO, chat_handler.handle_photo_message))
+    application.add_handler(MessageHandler(filters.PHOTO, chat_handler_instance.handle_photo_message))
 
-     # Команда для просмотра памяти - ДОБАВЬТЕ ЭТО
+    # Команда для просмотра памяти
     application.add_handler(MessageHandler(
         filters.Regex(r"(?i)(память|что помнишь|memory)"), 
-        chat_handler.show_memory_command
+        chat_handler_instance.show_memory_command
     ))
 
     # отладка — последней
@@ -977,6 +933,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
