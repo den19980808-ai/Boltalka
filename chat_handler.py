@@ -659,7 +659,7 @@ class ChatHandler:
     async def export_history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда для экспорта истории в файл (только для админов)"""
         user_id = update.message.from_user.id
-        ADMINS = [123456789]  # Замените на ваш Telegram ID
+        ADMINS = [323357522]  # Замените на ваш Telegram ID
         
         if user_id not in ADMINS:
             await update.message.reply_text("❌ Эта команда только для администраторов")
