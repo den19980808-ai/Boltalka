@@ -70,6 +70,10 @@ BAD_MARKERS = [
     "output json", "return json", "формат json", "без пояснений", "требуется", "нужно сделать"
 ]
 
+# Добавьте после других глобальных переменных
+USED_OMENS = set()
+MAX_OMEN_HISTORY = 10
+
 def _get_openai():
     global _openai_client
     if _openai_client is None:
@@ -150,6 +154,25 @@ def sanitize_wish(text: str) -> str:
         out = (head + "\n\n" + tail).strip()
     return out
 
+def get_fresh_omen(themes: list, used_omens: set) -> str:
+    """Возвращает свежую примету, которая не использовалась недавно"""
+    available_themes = [t for t in themes if t not in used_omens]
+    
+    if not available_themes:
+        # Если все темы использовались, очищаем историю и начинаем заново
+        used_omens.clear()
+        available_themes = themes
+    
+    selected = random.choice(available_themes)
+    used_omens.add(selected)
+    
+    # Ограничиваем размер истории
+    if len(used_omens) > MAX_OMEN_HISTORY:
+        # Удаляем самую старую запись (но set не упорядочен, поэтому просто очищаем часть)
+        used_omens.clear()
+        used_omens.add(selected)
+    
+    return selected
 
 HTML_BR_RE = re.compile(r"<\s*br\s*/?\s*>", flags=re.I)
 ALLOWED_TAGS = {"b", "i", "u", "s", "code", "pre", "a", "blockquote", "tg-spoiler"}
@@ -494,12 +517,104 @@ def ai_generate_comments_batch_intel(city_items):
             used_skel.add(sk)
     return out
 
+def get_seasonal_omens(now_local) -> list:
+    """Возвращает сезонные приметы в зависимости от времени года"""
+    month = now_local.month
+    base_omens = [
+        # базовые приметы (из предыдущего списка)
+    ]
+    
+    seasonal_omens = []
+    
+    # Зима (декабрь-февраль)
+    if month in [12, 1, 2]:
+        seasonal_omens = [
+            "если иней на деревьях — к сказочному дню",
+            "если снег хрустит под ногами — к ясным решениям",
+            "если увидел снежинку на рукаве — загадай желание"
+        ]
+    
+    # Весна (март-май)
+    elif month in [3, 4, 5]:
+        seasonal_omens = [
+            "если почки на деревьях набухли — к новым начинаниям",
+            "если услышал капель — пора обновлять планы",
+            "если первый одуванчик — загадай желание и подуй"
+        ]
+    
+    # Лето (июнь-август)
+    elif month in [6, 7, 8]:
+        seasonal_omens = [
+            "если раскаты грома — к громким успехам",
+            "если купаться в росе — к утренней бодрости",
+            "если ягоды поспели — к сладким моментам"
+        ]
+    
+    # Осень (сентябрь-ноябрь)
+    else:
+        seasonal_omens = [
+            "если листопад — отпускай старое без сожалений",
+            "если паутинка летит — к неожиданным связям",
+            "если туман утром — к таинственным событиям"
+        ]
+    
+    return base_omens + seasonal_omens
+
 # Пожелание: 180–240 символов
 def ai_generate_wish_240_intel() -> str:
     tz = ZoneInfo(os.getenv("TZ", "Europe/Amsterdam"))
     now_local = datetime.now(tz)
     date_human = human_ru_date(now_local)
     weekday = WEEKDAY_RU[now_local.weekday()]
+    omen_themes = get_seasonal_omens(now_local)
+    
+     # Расширенный список тем для примет
+    omen_themes = [
+        # Кулинарные
+        "если утром пересолен суп — день будет пикантным и насыщенным",
+        "если кофе пролился на стол — жди неожиданных гостей",
+        "если хлеб упал маслом вверх — к финансовой удаче",
+        
+        # Погодные
+        "если дождь начался внезапно — это к неожиданным решениям",
+        "если увидишь радугу после дождя — загадай желание, оно сбудется",
+        "если утром туман — значит, судьба приготовила сюрпризы",
+        
+        # Бытовые
+        "если часы остановились — пора сделать паузу и перевести дух",
+        "если нашёл старую фотографию — вспомни о хорошем моменте",
+        "если разбилась посуда — к обновлениям в жизни",
+        
+        # Природные
+        "если птица села на подоконник — жди добрых вестей",
+        "если увидишь падающую звезду — загадай самое сокровенное",
+        "если кот потягивается — значит, удача уже на пороге",
+        
+        # Сезонные
+        "если лист клёна упал прямо в руки — осень принесёт приятные перемены",
+        "еждали первый снег — загадай желание на зиму",
+        "если почувствовал запах весны в воздухе — начинай новые проекты",
+        
+        # Городские
+        "если увидел красный кабриолет — это к покупке зелёного шарфика",
+        "если все светофоры зелёные — день пройдет гладко",
+        "если встретил улыбающегося незнакомца — удача сегодня с тобой",
+        
+        # Культурные/кулинарные
+        "если за окном дождь — пора готовить чашушули",
+        "если на улице мороз — самое время для глинтвейна",
+        "если солнце светит ярко — приготовь окрошку",
+        
+        # Абсурдные/юмористические
+        "если носки наделись с первого раза — весь день будет удачным",
+        "если поймал такси без очереди — значит, вселенная тебя любит",
+        "если Wi-Fi ловит лучше обычного — к продуктивному дню"
+    ]
+
+
+    selected_omen = get_fresh_omen(omen_themes, USED_OMENS)
+    # Случайный выбор темы приметы
+    selected_omen = random.choice(omen_themes)
 
     prompt = (
         "Ты создаёшь тёплое пожелание на день для семейного чата с выдуманной приметой.\n\n"
@@ -528,33 +643,33 @@ def ai_generate_wish_240_intel() -> str:
     )
 
     for _ in range(3):
-        raw = _intel_chat(prompt, max_tokens=500, temperature=0.8)
-        wish = sanitize_wish(raw)
-        if wish:
-            # Обеспечиваем правильное расположение blockquote
-            if "<blockquote>" in wish:
-                parts = wish.split("<blockquote>")
-                if len(parts) > 1:
-                    head = "<blockquote>".join(parts[:-1]).strip()
-                    last = "<blockquote>" + parts[-1]
-                    if "</blockquote>" in last:
-                        last = last[:last.find("</blockquote>")+13]
-                    # Убираем лишние blockquote из основной части
-                    head = re.sub(r"<blockquote>.*?</blockquote>", "", head, flags=re.S)
-                    head = re.sub(r"\n{2,}", "\n\n", head).strip()
-                    wish = (head + "\n\n" + last).strip()
+        raw_wish = _intel_chat(prompt, max_tokens=400, temperature=0.85)
+        if raw_wish:
+            # Очищаем и форматируем пожелание
+            wish_text = sanitize_wish(raw_wish)
             
-            # Проверка длины
-            if 220 <= len(wish) <= 400:
-                return wish
+            # Добавляем примету
+            full_wish = f"{wish_text}\n\n<blockquote>Примета на {date_human}: {selected_omen}</blockquote>"
+            
+            # Проверяем длину
+            if 220 <= len(full_wish) <= 450:
+                return full_wish
 
-    # Улучшенный фоллбэк
-    fb = (
+    # Улучшенный фоллбэк с случайной приметой
+    fallback_omens = [
+        f"Если {weekday} начался с улыбки — весь день пройдет на позитивной волне",
+        f"Нашёл монету по дороге — жди приятного сюрприза после обеда",
+        f"Услышал пение птиц из окна — день пройдёт под знаком лёгкости",
+        f"Если утренний кофе оказался особенно вкусным — все планы сложатся удачно"
+    ]
+    
+    fallback_omen = random.choice(fallback_omens)
+    fallback_wish = (
         f"Пусть {weekday} порадует маленькими неожиданностями — тёплой чашкой чая, "
-        f"добрым словом и моментом тишины среди суеты. \n\n"
-        f"<blockquote>Примета на {date_human}: если первая мысль утром была светлой — весь день пройдёт на позитивной волне</blockquote>"
+        f"добрым словом и моментом тишины среди суеты.\n\n"
+        f"<blockquote>Примета на {date_human}: {fallback_omen}</blockquote>"
     )
-    return sanitize_wish(fb)
+    return sanitize_wish(fallback_wish)
 
 
 
@@ -862,6 +977,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
