@@ -232,6 +232,7 @@ def should_respond(update: Update) -> bool:
  # Проверяем, является ли сообщение продолжением диалога
     handler = get_chat_handler()
     if handler and handler.should_continue_conversation(chat_id, text):
+        chat_id = str(update.effective_chat.id)
         logging.info("🔄 Обнаружено продолжение диалога по контексту")
         return True
         
@@ -1004,6 +1005,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
