@@ -913,7 +913,14 @@ def run_flask():
     port = int(os.environ.get("PORT", 8000))
     flask_app.run(host="0.0.0.0", port=port)
 
-      
+
+async def reset_conversation_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбрасывает контекст диалога"""
+    chat_id = str(update.effective_chat.id)
+    handler = get_chat_handler()
+    if handler:
+        handler.end_conversation(chat_id)
+        await update.message.reply_text("✅ Начинаем новый диалог! Что хочешь обсудить?")
 
 # === Точка входа ===
 def main():
@@ -948,10 +955,10 @@ def main():
     ))
 
     # В main() добавьте этот обработчик:
-application.add_handler(MessageHandler(
-    filters.Regex(r"(?i)(новый диалог|сброс|забудь|start over)"), 
-    reset_conversation_context
-))
+    application.add_handler(MessageHandler(
+        filters.Regex(r"(?i)(новый диалог|сброс|забудь|start over)"), 
+        reset_conversation_context
+    ))
 
 
 
@@ -971,13 +978,7 @@ application.add_handler(MessageHandler(
     application.post_init = on_startup
     application.run_polling(close_loop=False)
 
-async def reset_conversation_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сбрасывает контекст диалога"""
-    chat_id = str(update.effective_chat.id)
-    handler = get_chat_handler()
-    if handler:
-        handler.end_conversation(chat_id)
-        await update.message.reply_text("✅ Начинаем новый диалог! Что хочешь обсудить?")
+
 
 if __name__ == "__main__":
     # Запускаем Flask сервер для health checks в отдельном потоке
@@ -1003,6 +1004,7 @@ if __name__ == "__main__":
 
     # Запускаем Telegram бота
     main()
+
 
 
 
