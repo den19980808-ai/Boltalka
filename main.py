@@ -34,6 +34,12 @@ _openai_client = None
 # Хранилище для контекста новостей по чатам
 _news_context = {}  # {chat_id: {"text": "новость", "raw": "исходная новость", "category": "наука"}}
 
+# Хранилище уже отправленных новостей (чтобы не повторять)
+_sent_news = {}  # {chat_id: [list of sent news texts]}
+
+# Хранилище приветствий за день (чтобы не повторять)
+_greetings_today = {}  # {chat_id: True/False}
+
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
 CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
 
@@ -1204,6 +1210,20 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Получаем ответ от chat_handler
             handler = get_chat_handler()
             if handler:
+                # *** НОВОЕ: Проверяем, не было ли приветствия сегодня ***
+                today = datetime.now(ZoneInfo(TZ_NAME)).date()
+                greeting_key = f"{chat_id}_{today.isoformat()}"
+                
+                suppress_greeting = ""
+                if greeting_key in _greetings_today:
+                    # Если уже было приветствие сегодня, подавляем его
+                    suppress_greeting = "\n[НЕ ДОБАВЛЯЙ ПРИВЕТСТВИЕ! Уже было приветствие сегодня - просто отвечай на вопрос.]"
+                    logging.info(f"💬 Приветствие уже было сегодня для {chat_id}")
+                else:
+                    # Первое сообщение в день - помечаем, что приветствие было
+                    _greetings_today[greeting_key] = True
+                    logging.info(f"💬 Первое сообщение дня для {chat_id} - разрешаем приветствие")
+                
                 # *** ОБНОВЛЕНО: Добавляем ПОЛНЫЙ контекст новости для развернутых ответов ***
                 if chat_id in _news_context:
                     news_ctx = _news_context[chat_id]
@@ -1222,7 +1242,7 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Добавь контекст, объяснения, детали
 - Не пиши односложно и кратко
 - Если нужно, добавь релевантную информацию из общих знаний
-- Будь дружелюбным и информативным"""
+- Будь дружелюбным и информативным{suppress_greeting}"""
                     
                     chat_history_manager.add_message(
                         from_user="СИСТЕМА",
@@ -1230,6 +1250,12 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text=context_instruction
                     )
                     logging.info(f"📰 Добавлен полный контекст новости")
+                elif suppress_greeting:
+                    chat_history_manager.add_message(
+                        from_user="СИСТЕМА",
+                        from_id="system",
+                        text=suppress_greeting
+                    )
                 
                 response = await handler.generate_contextual_response(update, context)
                 
@@ -1282,77 +1308,87 @@ async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"❌ Ошибка в обработчике on_whats_today: {e}")
 
 async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет случайную новость до 300 символов"""
+    """Отправляет случайную новость до 300 символов (без категории в названии)"""
     try:
         logging.info("📰 Обработка запроса на случайную новость")
         
         chat_id = str(update.effective_chat.id)
         
-        # Собираем новости
-        news_list = _collect_gnews_articles(limit=5)
+        # Инициализируем кеш отправленных новостей для чата
+        if chat_id not in _sent_news:
+            _sent_news[chat_id] = []
         
-        if not news_list:
-            await update.message.reply_text("Не удалось получить новости. Попробуйте позже.")
-            logging.warning("⚠️  Не удалось собрать новости")
-            return
+        # Пытаемся найти новую (не отправленную ранее) новость
+        max_attempts = 10
+        selected_news = None
+        selected_category = None
         
-        # Выбираем случайную новость
-        category, raw_news = random.choice(news_list)
+        for attempt in range(max_attempts):
+            # Собираем новости
+            news_list = _collect_gnews_articles(limit=10)
+            
+            if not news_list:
+                await update.message.reply_text("Не удалось получить новости. Попробуйте позже.")
+                logging.warning("⚠️  Не удалось собрать новости")
+                return
+            
+            # Выбираем случайную новость
+            selected_category, raw_news = random.choice(news_list)
+            
+            # Обрезаем до 300 символов
+            news_text = _truncate_news(raw_news, max_length=300)
+            
+            # Проверяем, не отправляли ли уже эту новость
+            if news_text not in _sent_news[chat_id]:
+                selected_news = news_text
+                break
+            else:
+                logging.debug(f"⏭️  Новость уже отправлялась, пропускаем")
         
-        # Обрезаем до 300 символов
-        news_text = _truncate_news(raw_news, max_length=300)
+        if selected_news is None:
+            # Если все попытки не дали результата, сбрасываем кеш
+            logging.info(f"🔄 Кеш новостей переполнен, сбрасываем")
+            _sent_news[chat_id] = []
+            selected_news = news_text
         
         # Пытаемся обработать через OpenAI если возможно
         if OPENAI_MODEL and _get_openai():
             try:
                 # Собираем в список для обработки
-                news_for_gpt = [(category, raw_news)]
+                news_for_gpt = [(selected_category, raw_news)]
                 enhanced = _enhance_news_with_gpt(news_for_gpt)
                 
                 if enhanced and len(enhanced) > 0:
                     # Используем обработанную версию, но всё равно обрезаем до 300
-                    news_text = _truncate_news(enhanced[0], max_length=300)
-                    logging.info(f"✅ Новость обработана через GPT: {news_text[:60]}...")
+                    selected_news = _truncate_news(enhanced[0], max_length=300)
+                    logging.info(f"✅ Новость обработана через GPT: {selected_news[:60]}...")
             except Exception as e:
                 logging.warning(f"⚠️  Ошибка обработки через GPT: {e}, используем исходный текст")
-                news_text = _truncate_news(raw_news, max_length=300)
-        else:
-            news_text = _truncate_news(raw_news, max_length=300)
+        
+        # Добавляем в кеш отправленных
+        _sent_news[chat_id].append(selected_news)
         
         # *** ОБНОВЛЕНО: Сохраняем ПОЛНЫЙ контекст для развернутых ответов ***
         _news_context[chat_id] = {
-            "text": news_text,  # Краткая версия (для отправки пользователю)
+            "text": selected_news,  # Краткая версия (для отправки пользователю)
             "raw": raw_news,  # Исходная полная версия (для контекста ответов)
-            "category": category,
+            "category": selected_category,
             "timestamp": datetime.now(ZoneInfo(TZ_NAME)),
-            "full_context": f"""НОВОСТЬ ({category.upper()}):
+            "full_context": f"""НОВОСТЬ ({selected_category.upper()}):
 {raw_news}
 
 КРАТКАЯ ВЕРСИЯ:
-{news_text}"""
+{selected_news}"""
         }
         logging.info(f"💾 Контекст новости сохранен для чата {chat_id}")
         
-        # Формируем сообщение с эмодзи
-        emoji_map = {
-            "science": "🔬",
-            "technology": "💻",
-            "business": "💼",
-            "health": "⚕️",
-            "sports": "⚽",
-            "entertainment": "🎬"
-        }
-        emoji = emoji_map.get(category, "📰")
-        
-        message = f"{emoji} *{category.upper()}*\n\n{news_text}"
-        
+        # *** ИЗМЕНЕНО: Отправляем БЕЗ категории, сразу саму новость ***
         await update.message.reply_text(
-            message,
-            reply_to_message_id=update.message.message_id,
-            parse_mode="Markdown"
+            selected_news,
+            reply_to_message_id=update.message.message_id
         )
         
-        logging.info(f"✅ Случайная новость отправлена: {news_text[:50]}...")
+        logging.info(f"✅ Случайная новость отправлена: {selected_news[:50]}...")
         
     except Exception as e:
         logging.error(f"❌ Ошибка в on_random_news: {e}")
