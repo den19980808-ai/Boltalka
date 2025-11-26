@@ -1171,27 +1171,29 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_text = update.message.text if update.message else None
         chat_id = str(update.effective_chat.id)
         
-        logging.info(f"📨 Получено сообщение от {user.first_name} в чате {chat.title if chat.type == 'group' else 'private'}: {message_text}")
+        logging.info(f"📨 Получено сообщение от {user.first_name if user else 'unknown'}: {message_text}")
         
         if not message_text:
+            logging.warning("⚠️  Пустое сообщение")
             return
         
-        # *** НОВОЕ: Проверяем специфичные запросы ПЕРВЫМИ ***
+        # *** ПЕРВАЯ ПРОВЕРКА: Специфичные запросы ***
+        
         # Запрос на случайную новость
         if _check_news_request(message_text):
-            logging.info(f"📰 Обнаружен запрос на новость: {message_text}")
+            logging.info(f"📰 ✅ ТРИГГЕР НОВОСТЬ: {message_text}")
             await on_random_news(update, context)
             return
         
         # Запрос "что сегодня?"
         if _check_whats_today_request(message_text):
-            logging.info(f"🔄 Обнаружен запрос 'что сегодня?': {message_text}")
+            logging.info(f"📅 ✅ ТРИГГЕР 'ЧТО СЕГОДНЯ': {message_text}")
             await on_whats_today(update, context)
             return
-            
-        # Используем функцию should_respond для проверки других триггеров и контекста
+        
+        # *** ВТОРАЯ ПРОВЕРКА: Обычные триггеры и контекст ***
         if should_respond(update):
-            logging.info(f"⚡ Обнаружен триггер или продолжение диалога: {message_text}")
+            logging.info(f"⚡ ✅ ТРИГГЕР НАЙДЕН: {message_text}")
             
             # Отправляем действие "печатает"
             await context.bot.send_chat_action(
@@ -1227,32 +1229,31 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         from_id="system",
                         text=context_instruction
                     )
-                    logging.info(f"📰 Добавлен полный контекст новости с инструкцией на развернутый ответ")
+                    logging.info(f"📰 Добавлен полный контекст новости")
                 
                 response = await handler.generate_contextual_response(update, context)
                 
                 if response:
                     # Отправляем ответ
-                    sent_message = await update.message.reply_text(
+                    await update.message.reply_text(
                         response,
                         reply_to_message_id=update.message.message_id
                     )
 
                     # Добавляем ответ бота в историю
                     chat_history_manager.add_message(
-                        from_user="Болтун",  # Имя бота
+                        from_user="Болтун",
                         from_id="bot",
                         text=response
                     )
                     
                     # Обновляем контекст: если бот задал вопрос, отмечаем это
-                    if any(marker in response for marker in ['?', 'расскажи', 'скажи', 'как', 'что', 'почему']):
+                    if any(marker in response for marker in ['?', 'расскажи', 'скажи']):
                         await handler.update_conversation_context(chat_id, response)
                     else:
-                        # Если это не вопрос, завершаем диалог
                         handler.end_conversation(chat_id)
                     
-                    logging.info(f"✅ Развернутый ответ отправлен ({len(response)} символов): {response[:50]}...")
+                    logging.info(f"✅ Ответ отправлен: {len(response)} символов")
                 else:
                     logging.warning("❌ Chat handler вернул пустой ответ")
                     handler.end_conversation(chat_id)
@@ -1260,17 +1261,18 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error("❌ Chat handler не инициализирован")
                 await update.message.reply_text("Извините, я временно недоступен 🛠️")
         else:
-            logging.info("🚫 Триггер не найден и диалог не продолжается")
+            logging.info(f"🚫 ТРИГГЕР НЕ НАЙДЕН: {message_text}")
             
     except Exception as e:
-        logging.error(f"❌ Ошибка в обработчике on_trigger: {e}")
+        logging.error(f"❌ Ошибка в on_trigger: {e}", exc_info=True)
         try:
             handler = get_chat_handler()
             if handler:
                 handler.end_conversation(str(update.effective_chat.id))
-            await update.message.reply_text("Произошла ошибка при обработке сообщения 🛠️")
-        except:
-            pass
+            await update.message.reply_text("Произошла ошибка 🛠️")
+        except Exception as e2:
+            logging.error(f"❌ Ошибка в обработке исключения: {e2}")
+
 # === Хэндлер "что сегодня?" ===
 async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
     try:
