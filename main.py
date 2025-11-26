@@ -1336,13 +1336,10 @@ async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Выбираем случайную новость
             selected_category, raw_news = random.choice(news_list)
             
-            # *** КЛЮЧЕВОЕ: Кешируем исходный текст, чтобы избежать дубликатов после GPT ***
-            # Обрезаем для проверки в кеше
-            raw_truncated = _truncate_news(raw_news, max_length=350)
-            
-            # Проверяем по исходному тексту, а не по обработанному
-            if raw_truncated not in _sent_news[chat_id]:
-                selected_news = raw_truncated
+            # *** КЛЮЧЕВОЕ: Кешируем ПОЛНЫЙ исходный текст, чтобы избежать дубликатов ***
+            # Проверяем по ПОЛНОМУ исходному тексту (не обрезанному), чтобы отловить дубликаты даже при переформулировке
+            if raw_news not in _sent_news[chat_id]:
+                selected_news = raw_news
                 logging.info(f"✅ Найдена новая новость (попытка {attempt + 1})")
                 break
             else:
@@ -1352,9 +1349,9 @@ async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Если все попытки не дали результата, сбрасываем кеш
             logging.info(f"🔄 Кеш новостей переполнен ({len(_sent_news[chat_id])} новостей), сбрасываем")
             _sent_news[chat_id] = []
-            selected_news = _truncate_news(raw_news, max_length=350)
+            selected_news = raw_news
         
-        # *** НОВОЕ: Добавляем в кеш ПЕРЕД обработкой GPT ***
+        # *** НОВОЕ: Добавляем ПОЛНЫЙ текст в кеш ПЕРЕД обработкой GPT ***
         _sent_news[chat_id].append(selected_news)
         logging.info(f"📌 Новость добавлена в кеш. Всего: {len(_sent_news[chat_id])}")
         
