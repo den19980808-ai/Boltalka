@@ -31,14 +31,14 @@ GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")  # GNews API для новостей
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 _openai_client = None
 
-# Хранилище для контекста новостей по чатам
-_news_context = {}  # {chat_id: {"text": "новость", "raw": "исходная новость", "category": "наука"}}
-
-# Хранилище уже отправленных новостей (чтобы не повторять)
-_sent_news = {}  # {chat_id: [list of sent news texts]}
-
 # Хранилище приветствий за день (чтобы не повторять)
 _greetings_today = {}  # {chat_id: True/False}
+
+# Хранилище времени последнего сообщения в диалоге (без явного упоминания имени)
+_last_dialog_time = {}  # {chat_id: timestamp of last non-triggered message}
+
+# Хранилище показанных новостей дня (чтобы не повторять)
+_shown_news_today = set()  # {article_title}
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
 CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
@@ -404,14 +404,29 @@ def build_weather_map() -> dict:
     return out
 
 # --- 2. НОВОСТИ из GNews API (science + technology) ---
-GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "c3c1fde56c83d7d50a44c02722661372")
+GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "f02e65f57c9ee6ea3aefc79db981a17b")
 GNEWS_BASE_URL = "https://gnews.io/api/v4/top-headlines"
+
+# Крупные авторитетные источники новостей (для фильтра популярности)
+TRUSTED_SOURCES = {
+    "bbc", "cnn", "reuters", "associated press", "ap", "reuters", "bloomberg", 
+    "the guardian", "new york times", "nyt", "washington post", "the times",
+    "the telegraph", "financial times", "ft", "the economist", "nature", "science",
+    "sciencedaily", "phys.org", "techcrunch", "wired", "theverge", "axios",
+    "cnbc", "bbc news", "aljazeera", "dw", "france24", "rt.com"
+}
 
 NEWS_EXCLUDE_KEYWORDS = [
     "war", "president", "election", "politic", "politics", "military", "soldier", "army",
     "attack", "russia", "ukraine", "conflict", "sanction", "strike", "bomb", "missile",
     "война", "политик", "политика", "армия", "удар", "санкци", "убийство", "теракт", 
-    "насилие", "преступление"
+    "насилие", "преступление", "российск", "москв", "кремл", "путин",
+    "sex", "porn", "сексу", "секс", "порно", "эротик", "nut november", "nut",
+    "сво", "actor died", "актер умер", "неизвестный", "локальный", "провинциальный",
+    "horoscope", "astrology", "гороскоп", "астролог", "zodiac", "знак зодиака",
+    # Фильтры на узконишевые развлечения
+     
+    "indie film", "indie", "documentary", "низкобюджетный"
 ]
 
 def _is_news_ok(title: str) -> bool:
@@ -423,6 +438,85 @@ def _is_news_ok(title: str) -> bool:
         if kw in low:
             return False
     return True
+
+def _is_source_trusted(source_name: str) -> bool:
+    """Проверяет, является ли источник авторитетным"""
+    if not source_name:
+        return False
+    source_lower = source_name.lower()
+    # Пройти по списку доверенных источников
+    for trusted in TRUSTED_SOURCES:
+        if trusted in source_lower:
+            return True
+    return False
+
+def _is_news_popular(title: str, description: str = "") -> bool:
+    """Проверяет, интересна ли новость широкой аудитории (не нишевая)
+    Смотрит на упоминание известных брендов, компаний, явлений
+    И проверяет, что это про развитые страны или глобальные события"""
+    
+    combined = (title + " " + description).lower()
+    
+    # ИСКЛЮЧИТЬ: скидки, распродажи, локальные события
+    exclude_keywords = {
+        "discount", "sale", "скидк", "распродаж", "deal", "offer", "coupon",
+        "black friday", "cyber monday",
+        # Локальные страны (только науку интересует везде)
+        "ghana", "nigeria", "cameroon", "senegal", "mali", "uganda", "kenya",
+        "india", "pakistan", "bangladesh", "australia", "new zealand",
+        "africa", "африк", "ганы", "нигери", "индии", "австрали",
+        # Локальные спорты и события
+        "nrl", "afl", "rugby league", "cricket", "nsw", "sydney", "perth",
+        "thunderstorm", "грозa"
+    }
+    
+    for keyword in exclude_keywords:
+        if keyword in combined:
+            return False
+    
+    # ВКЛЮЧИТЬ: известные компании, люди, события
+    popular_keywords = {
+        # Tech гиганты
+        "apple", "iphone", "ipad", "imac", "macos", "airpods",
+        "google", "android", "chrome", "youtube", "gmail",
+        "microsoft", "windows", "xbox", "copilot", "surface",
+        "meta", "facebook", "instagram", "whatsapp", "threads",
+        "amazon", "aws", "alexa",
+        "nvidia", "tesla", "openai", "chatgpt", "claude",
+        "netflix", "disney", "sony",
+        # Развитие технологий
+        "ai", "artificial intelligence", "machine learning", "deep learning",
+        "quantum", "quantum computing",
+        "software", "app", "device", "innovation", "startup",
+        "tech", "technology", "digital", "internet",
+        # Известные люди мирового уровня
+        "elon musk", "mark zuckerberg", "jeff bezos", "bill gates", "steve jobs",
+        # События и явления
+        "nasa", "spacex", "james webb", "olympic", "world cup", "earthquake", "volcano",
+        "hurricane", "flood", "discovery", "breakthrough",
+        # Science (работает везде)
+        "fusion", "climate", "renewable", "solar", "wind",
+        "dark matter", "dark stars", "black hole", "gravity", "physics", "scientist",
+        "space", "mars", "telescope", "mission",
+        # Развитые страны
+        "usa", "united states", "america", "europe", "germany", "france", "uk",
+        "japan", "south korea", "canada", "ukraine",
+        "америк", "европ", "германи", "францi", "англи", "япони", "украи",
+        "un", "eu", "nato",
+        # Известные места
+        "washington", "london", "paris", "berlin", "tokyo", "silicon valley",
+        # Health
+        "cancer", "disease", "virus", "pandemic", "medicine", "health", "doctor",
+        "hospital", "treatment", "vaccine", "research"
+    }
+    
+    # Если хотя бы одно популярное ключевое слово - интересная новость
+    for keyword in popular_keywords:
+        if keyword in combined:
+            return True
+    
+    # Если нет популярных ключевых слов - скорее всего нишевая новость
+    return False
 
 def _first_sentence(text: str) -> str:
     """Обрезает текст до первого предложения (макс 150 символов)"""
@@ -448,172 +542,157 @@ def _first_sentence(text: str) -> str:
         return cut
     return text
 
-def _collect_gnews_articles(limit: int = 3) -> list[tuple[str, str]]:
-    """
-    Собирает 2-3 новости из GNews API на АНГЛИЙСКОМ (science + technology).
-    Избегает новостей про Россию и русских источников.
-    Возвращает список кортежей (категория, текст новости) для обработки GPT.
-    """
-    articles = []
+def _collect_digest_news() -> list[dict]:
+    """Собирает 3 уникальные популярные новости из разных топиков в порядке: 
+    science → general → technology → health (без entertainment)
+    Берёт самые популярные мировые новости, а не локальные"""
     
-    if not GNEWS_API_KEY:
-        logging.warning("⚠️  GNEWS_API_KEY не установлен, новости недоступны")
-        return articles
+    # Топики в нужном порядке (entertainment убран)
+    topics = ["science", "general", "technology", "health"]
+    news_list = []
     
-    # Ищем в двух категориях: science и technology (на английском)
-    categories = ["science", "technology"]
-    seen_titles = set()
-    
-    # Ключевые слова, которые указывают на русские новости или Россию
-    russia_keywords = [
-        "russia", "russian", "moscow", "kremlin", "putin", "russia",
-        "россия", "русс", "москв", "путин", "кремл",
-        "ussr", "soviet", "baikonur"  # Байконур - исключаем космические новости из России
-    ]
-    
-    for category in categories:
-        if len(articles) >= limit:
+    for topic in topics:
+        if len(news_list) >= 3:  # Нужны 3 новости из разных топиков
             break
-        
+            
         try:
             params = {
-                "category": category,
-                "lang": "en",  # На АНГЛИЙСКОМ
-                "max": limit * 3,  # Берем больше, чтобы после фильтрации было достаточно
+                "category": topic,
+                "lang": "en",
+                "sortby": "relevance",  # Relevance для популярных новостей
+                "max": 25,  # Берём много, чтобы отфильтровать и найти популярные
                 "apikey": GNEWS_API_KEY
             }
-            
-            r = requests.get(GNEWS_BASE_URL, params=params, timeout=10)
-            if r.status_code != 200:
-                logging.warning(f"⚠️  GNews вернул {r.status_code} для категории {category}")
+            response = requests.get(GNEWS_BASE_URL, params=params, timeout=5)
+            if response.status_code != 200:
+                logging.debug(f"⚠️ GNews API вернул статус {response.status_code} для {topic}")
                 continue
             
-            data = r.json()
-            articles_data = data.get("articles", []) or []
+            data = response.json()
+            articles = data.get("articles", [])
+            logging.info(f"📰 Топик '{topic}': получено {len(articles)} статей")
             
-            logging.info(f"📰 GNews вернул {len(articles_data)} статей для категории {category}")
+            # Ищем первую подходящую ПОПУЛЯРНУЮ новость из этого топика
+            # Сначала ищем в авторитетных источниках и популярные, потом остальные
+            found_in_topic = False
+            candidates = []  # (article, is_trusted, is_popular, source)
             
-            for article in articles_data:
-                if len(articles) >= limit:
-                    break
+            for article in articles:
+                title = article.get("title", "")
+                description = article.get("description", "")
+                source = article.get("source", {}).get("name", "Unknown")
                 
-                title = (article.get("title") or "").strip()
-                description = (article.get("description") or "").strip()
-                
-                if not title:
+                # Пропускаем, если уже показывали эту новость сегодня
+                if title in _shown_news_today:
+                    logging.debug(f"🔄 Уже показана сегодня: {title[:50]}")
                     continue
                 
-                # ИСКЛЮЧАЕМ новости про Россию и русские источники
-                combined = f"{title} {description}".lower()
-                if any(kw in combined for kw in russia_keywords):
-                    logging.debug(f"⏭️  Пропущена новость про Россию: {title[:50]}")
-                    continue
-                
-                # Проверяем, не политическая ли (общая фильтрация)
+                # Проверяем, не табу-новость ли это (война, политика, военное и т.д.)
                 if not _is_news_ok(title):
-                    logging.debug(f"⏭️  Пропущена новость (политика): {title[:50]}")
+                    logging.debug(f"🚫 Пропущена табу-новость: {title[:50]}")
                     continue
                 
-                # Избегаем дубликатов
-                if title in seen_titles:
+                # Пропускаем локальные источники (GhanaWeb, BusinessGhana и т.д.)
+                source_lower = source.lower()
+                if any(x in source_lower for x in ["ghana", "ghanaian", "africa", "africana", "nrl", "afl"]):
+                    logging.debug(f"⚠️ Локальный источник: {source}")
                     continue
                 
-                seen_titles.add(title)
+                is_trusted = _is_source_trusted(source)
+                is_popular = _is_news_popular(title, description)
                 
-                # Сохраняем заголовок + описание для GPT с категорией
+                candidates.append((article, is_trusted, is_popular, source))
+            
+            # Сортируем: авторитетные + популярные вперёд
+            # Для всех топиков требуем популярность
+            # Отфильтруем непопулярные кандидаты
+            candidates = [(a, t, p, s) for a, t, p, s in candidates if p]
+            candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
+            
+            for article, is_trusted, is_popular, source in candidates:
+                title = article.get("title", "")
+                description = article.get("description", "")
+                
+                # Полный текст для анализа GPT
                 full_text = f"{title}. {description}" if description else title
-                articles.append((category, full_text))
-                logging.info(f"✅ Новость добавлена ({category}): {title[:60]}")
-        
+                if full_text:
+                    news_list.append({
+                        "title": title,
+                        "full_text": full_text,
+                        "topic": topic,
+                        "source": source
+                    })
+                    _shown_news_today.add(title)
+                    found_in_topic = True
+                    trust_mark = "✓ авторитетный" if is_trusted else "⚠️ локальный"
+                    pop_mark = "★ популярная" if is_popular else "○ специализированная"
+                    logging.info(f"✅ Нашли в топике '{topic}' ({trust_mark} {pop_mark}, {source}): {title[:60]}...")
+                    break
+            
+            if not found_in_topic:
+                logging.info(f"⚠️ Подходящих новостей не найдено в топике '{topic}'")
+                
         except Exception as e:
-            logging.warning(f"❌ Ошибка при получении новостей из GNews ({category}): {e}")
+            logging.error(f"❌ Ошибка при загрузке новостей из {topic}: {e}")
             continue
     
-    logging.info(f"📊 Собрано {len(articles)} новостей для обработки GPT")
-    return articles
+    logging.info(f"✅ Отобрано {len(news_list)} новостей из разных топиков (всего сегодня: {len(_shown_news_today)})")
+    return news_list
 
-def _enhance_news_with_gpt(news_list: list[tuple[str, str]]) -> list[str]:
-    """
-    Принимает список кортежей (категория, новость) на АНГЛИЙСКОМ и обрабатывает через GPT.
-    GPT переформатирует в 1 короткое предложение (80-120 символов) на РУССКОМ с юмором.
-    Возвращает список кратких русских новостей.
-    """
-    if not news_list:
+def _analyze_news_with_gpt(news_items: list[dict]) -> list[dict]:
+    """Анализирует новости с помощью GPT, делает выжимку 80-120 символов на русском с юмором"""
+    if not news_items:
+        logging.warning("⚠️ Нет новостей для анализа")
         return []
     
-    if not OPENAI_MODEL or not _get_openai():
-        logging.warning("⚠️  OpenAI не доступен, возвращаем новости без обработки")
-        # Возвращаем обрезанные английские новости если OpenAI недоступен
-        return [_truncate_news(news, 350) for _, news in news_list]
+    client = _get_openai()
+    if not client:
+        logging.error("❌ Не удалось инициализировать OpenAI клиент")
+        return []
     
-    enhanced = []
-    
-    for category, news in news_list:
+    analyzed = []
+    for item in news_items:
         try:
-            # Определяем русский текст категории для контекста
-            category_labels = {
-                "science": "научное открытие",
-                "technology": "технологический прорыв"
-            }
-            category_label = category_labels.get(category, "новость")
+            prompt = f"""Проанализируй эту новость и сделай краткую выжимку на РУССКОМ языке (80-120 символов).
+Если уместно, добавь мягкий юмор. БЕЗ эмодзи!
+
+Новость: {item['full_text'][:500]}
+
+Ответь ТОЛЬКО выжимкой, без предисловий и объяснений."""
+
+            logging.info(f"🤖 Анализирую новость с GPT: {item['title'][:50]}...")
             
-            prompt = (
-                f"Это {category_label}. Переформатируй в 2-3 предложения (250-350 символов):\n\n"
-                f'"{news}"\n\n'
-                "ТРЕБОВАНИЯ:\n"
-                "- 2-3 предложения на русском (250-350 символов)\n"
-                "- Подробнее и понятнее, чем оригинал\n"
-                "- Объясни ЧТО произошло и ПОЧЕМУ это важно\n"
-                "- Легкий юмор или метафора приветствуется\n"
-                "- Без эмодзи\n"
-                "- Естественно и интересно\n\n"
-                "ПРИМЕРЫ:\n"
-                "'Ученые впервые смогли увидеть темную материю в лаборатории. Это крупный прорыв в физике, который поможет лучше понять структуру Вселенной. Теперь ученые смогут проводить тесты, которые раньше считались невозможными.'\n"
-                "'Компания создала нанотрубки толщиной в несколько атомов, которые могут использоваться в квантовых компьютерах. Это значительно ускорит развитие технологии. Через несколько лет мы можем ожидать компьютеры, которые будут работать в миллионы раз быстрее.'\n\n"
-                "Верни ТОЛЬКО переформатированную новость (без кавычек):"
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                max_tokens=150,
+                temperature=0.7
             )
             
-            resp = _intel_chat(prompt, max_tokens=400, temperature=0.8)
+            summary = response.choices[0].message.content.strip()
+            analyzed.append({
+                "title": item["title"],
+                "summary": summary
+            })
+            logging.info(f"✅ Выжимка готова: {summary[:80]}...")
             
-            if resp:
-                # Санитизируем ответ
-                resp = resp.strip().strip('"').strip("'").strip()
-                # Обрезаем до 350 символов если превышает
-                resp = _truncate_news(resp, 350)
-                if resp and len(resp) > 40:
-                    enhanced.append(resp)
-                    logging.info(f"✅ Новость обработана GPT ({len(resp)} сим): {resp[:60]}")
-                else:
-                    logging.warning(f"⚠️  GPT вернул слишком короткий ответ")
-            else:
-                logging.warning(f"⚠️  GPT не вернул ответ для новости")
-        
         except Exception as e:
-            logging.warning(f"❌ Ошибка обработки новости GPT: {e}")
+            logging.error(f"❌ Ошибка при анализе новости GPT: {e}")
+            # Fallback: используем первое предложение оригинального текста
+            fallback = _first_sentence(item["full_text"])
+            if fallback:
+                analyzed.append({
+                    "title": item["title"],
+                    "summary": fallback
+                })
+                logging.info(f"⚠️ Использован fallback для новости: {fallback[:80]}...")
     
-    logging.info(f"📊 Обработано {len(enhanced)} новостей через GPT")
-    return enhanced
-
-def _truncate_news(text: str, max_length: int = 120) -> str:
-    """Обрезает новость до максимальной длины, стараясь не резать слово"""
-    if len(text) <= max_length:
-        return text
-    
-    # Обрезаем по длине
-    truncated = text[:max_length]
-    
-    # Находим последний пробел перед концом
-    if " " in truncated:
-        truncated = truncated[:truncated.rfind(" ")]
-    
-    # Добавляем многоточие если текст был обрезан
-    if len(text) > len(truncated):
-        truncated = truncated.strip() + "..."
-    
-    return truncated.strip()
-    
-    logging.info(f"📊 Обработано {len(enhanced)} новостей через GPT")
-    return enhanced
+    return analyzed
 
 # --- 3. ДНИ РОЖДЕНИЯ (из локального файла) ---
 def _birthdays_for_today(target_date: date | None = None) -> list[dict]:
@@ -646,30 +725,34 @@ def build_morning_digest(target_date: date | None = None) -> tuple[str, dict]:
     parts.append("🌅 Доброе утро!")
     parts.append("")
     
-    # 2. ПОГОДА (новый компактный формат)
+    # 2. ПОГОДА с сокращенными пробелами
     weather_map = build_weather_map()
     if weather_map:
-        parts.append("📌 Погода по городам:")
+        parts.append("📌 Погода сегодня:")
         for city_ru, _ in CITIES:
             wi = weather_map.get(city_ru)
-            if not wi:
+            if not city_ru or not wi:
                 continue
-            # Формат: "Город — min° → max° 🌡️" с двумя пробелами в конце
-            parts.append(f"{city_ru} — {wi['min']}° → {wi['max']}° {wi['icon']}")
+            # Компактный формат без лишних пробелов
+            city_display = f"• {city_ru:<8}"  # 8 символов для выравнивания (сокращено)
+            temp_display = f" — {wi['min']:3}° → {wi['max']:3}° {wi['icon']}"
+            parts.append(city_display + temp_display)
         parts.append("")
     
     # 3. РАЗДЕЛИТЕЛЬ
     parts.append("∙∙∙")
     parts.append("")
     
-    # 4. НОВОСТИ (компактный формат 80-120 символов)
-    raw_news = _collect_gnews_articles(limit=3)  # Берем 2-3 новости
-    news = _enhance_news_with_gpt(raw_news)      # Пропускаем через GPT (обрезка там)
-    if news:
-        parts.append("📰 Новости дня:")
-        for n in news:
-            parts.append(f"• {n}")
-        parts.append("")
+    # 4. НОВОСТИ ДЛЯ ДАЙДЖЕСТА (3 новости с проверкой дублей)
+    news_items = _collect_digest_news()
+    if news_items:
+        # Анализируем новости с GPT: выжимка 80-120 символов на русском с юмором
+        analyzed_news = _analyze_news_with_gpt(news_items)
+        if analyzed_news:
+            parts.append("📰 Новости дня:")
+            for item in analyzed_news:
+                parts.append(f"• {item['summary']}")
+            parts.append("")
     
     # 5. РАЗДЕЛИТЕЛЬ
     parts.append("∙∙∙")
@@ -685,9 +768,9 @@ def build_morning_digest(target_date: date | None = None) -> tuple[str, dict]:
     if "\n\n" in wish_text:
         main_wish, citation = wish_text.split("\n\n", 1)
         parts.append(main_wish)
-        parts.append("<blockquote>")
-        parts.append(citation)
-        parts.append("</blockquote>")
+        parts.append("")
+        # Обернуть цитату в blockquote
+        parts.append(f"<blockquote>{citation}</blockquote>")
     else:
         # Fallback если нет разделения
         parts.append(wish_text)
@@ -720,19 +803,19 @@ def should_respond(update: Update) -> bool:
 
     logging.info(f"📨 Получено сообщение: {text}")
 
-    # Список триггеров для реакции
+    # Список триггеров для реакции (на какие слова реагирует бот)
     triggers = [
-        r'\b[Бб]олтун\w*',
-        r'\b[Пп]оболта\w+',
-        r'\b[Пп]оговори\w+', 
-        r'\b[Ээ]й\s*,\s*бот',
-        r'\b[Пп]ривет\s*,\s*бот',
-        r'\b[Бб]от\s*,\s*[Пп]ривет',
-        r'\b[Пп]риветствую',
-        r'\b[Пп]оздороваться',
-        r'\b[Вв]ася\w*',
-        r'\b[Вв]асилий\w*',
-        r'\b[Бб]олт\w*',
+        r'\b[Бб]олтун\w*',      # болтун
+        r'\b[Вв]ася\w*',        # вася (новое - имя бота)
+        r'\b[Вв]асилий\w*',     # василий
+        r'\b[Пп]оболта\w+',     # поболтай
+        r'\b[Пп]оговори\w+',    # поговори
+        r'\b[Ээ]й\s*,?\s*бот',  # эй, бот
+        r'\b[Пп]ривет\s*,?\s*бот', # привет, бот
+        r'\b[Бб]от\s*,?\s*[Пп]ривет', # бот, привет
+        r'\b[Пп]риветствую',    # приветствую
+        r'\b[Пп]оздороваться',  # поздороваться
+        r'\b[Бб]олт\w*',        # болтовня
     ]
 
     # Проверяем каждый триггер
@@ -741,28 +824,32 @@ def should_respond(update: Update) -> bool:
             logging.info(f"⚡ Обнаружен триггер: {trigger}")
             return True
 
-    # *** НОВОЕ: Проверяем вопросы о новостях ***
-    if chat_id in _news_context:
-        # Если есть сохраненная новость, проверяем вопросы о ней
-        is_question = '?' in text or any(word in text for word in ['что', 'какой', 'какая', 'какие', 'кто', 'когда', 'где', 'почему', 'как', 'зачем', 'откуда'])
-        
-        if is_question:
-            logging.info(f"❓ Обнаружен вопрос о новости в контексте: {text}")
-            return True
+    # *** НОВОЕ: Проверяем окно диалога (10 минут без явного упоминания имени) ***
+    if chat_id in _last_dialog_time:
+        time_diff = datetime.now(ZoneInfo(TZ_NAME)) - _last_dialog_time[chat_id]
+        if time_diff.total_seconds() > 600:  # > 10 минут
+            # Окно диалога истекло - требуется явное упоминание имени
+            logging.info(f"⏰ Окно диалога истекло (прошло {int(time_diff.total_seconds())} сек > 10 минут)")
+            del _last_dialog_time[chat_id]
+            # Не отвечаем без явного триггера
+            logging.info("🚫 Требуется явное упоминание имени")
+            return False
+        else:
+            # Еще в пределах 10 минут - обновляем временную метку
+            logging.info(f"⏳ В пределах окна диалога ({int(time_diff.total_seconds())} сек из 600)")
+            _last_dialog_time[chat_id] = datetime.now(ZoneInfo(TZ_NAME))
 
     # Проверяем, является ли сообщение продолжением диалога
     handler = get_chat_handler()
     if handler and handler.should_continue_conversation(chat_id, text):
         chat_id = str(update.effective_chat.id)
         logging.info("🔄 Обнаружено продолжение диалога по контексту")
+        # Устанавливаем время начала/продления диалога
+        _last_dialog_time[chat_id] = datetime.now(ZoneInfo(TZ_NAME))
         return True
         
     logging.info("🚫 Триггер не найден")
     return False
-
-def _check_news_request(text: str) -> bool:
-    """Проверяет, это ли запрос на новость"""
-    return bool(re.search(r'\b(новость|случайная\s+новость|дай\s+новость)\b', text, re.IGNORECASE))
 
 def _check_whats_today_request(text: str) -> bool:
     """Проверяет, это ли запрос 'что сегодня'"""
@@ -1185,12 +1272,6 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # *** ПЕРВАЯ ПРОВЕРКА: Специфичные запросы ***
         
-        # Запрос на случайную новость
-        if _check_news_request(message_text):
-            logging.info(f"📰 ✅ ТРИГГЕР НОВОСТЬ: {message_text}")
-            await on_random_news(update, context)
-            return
-        
         # Запрос "что сегодня?"
         if _check_whats_today_request(message_text):
             logging.info(f"📅 ✅ ТРИГГЕР 'ЧТО СЕГОДНЯ': {message_text}")
@@ -1200,6 +1281,10 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # *** ВТОРАЯ ПРОВЕРКА: Обычные триггеры и контекст ***
         if should_respond(update):
             logging.info(f"⚡ ✅ ТРИГГЕР НАЙДЕН: {message_text}")
+            
+            # *** НОВОЕ: Устанавливаем время явного упоминания имени ***
+            _last_dialog_time[chat_id] = datetime.now(ZoneInfo(TZ_NAME))
+            logging.info(f"🕐 Установлено время явного упоминания имени: {_last_dialog_time[chat_id]}")
             
             # Отправляем действие "печатает"
             await context.bot.send_chat_action(
@@ -1224,33 +1309,8 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     _greetings_today[greeting_key] = True
                     logging.info(f"💬 Первое сообщение дня для {chat_id} - разрешаем приветствие")
                 
-                # *** ОБНОВЛЕНО: Добавляем ПОЛНЫЙ контекст новости для развернутых ответов ***
-                if chat_id in _news_context:
-                    news_ctx = _news_context[chat_id]
-                    
-                    # Добавляем полный контекст новости в историю с инструкцией для развернутого ответа
-                    context_instruction = f"""[КОНТЕКСТ НОВОСТИ - ОТВЕЧАЙ РАЗВЕРНУТО!]
-Пользователь спрашивает о новости из категории: {news_ctx['category'].upper()}
-
-ПОЛНАЯ ИНФОРМАЦИЯ О НОВОСТИ:
-{news_ctx['full_context']}
-
-ИНСТРУКЦИЯ:
-- Отвечай на вопрос пользователя, основываясь на этой новости
-- Ответ должен быть РАЗВЕРНУТЫМ (300-500+ символов)
-- Пиши ЕСТЕСТВЕННО, как реальный человек
-- Добавь контекст, объяснения, детали
-- Не пиши односложно и кратко
-- Если нужно, добавь релевантную информацию из общих знаний
-- Будь дружелюбным и информативным{suppress_greeting}"""
-                    
-                    chat_history_manager.add_message(
-                        from_user="СИСТЕМА",
-                        from_id="system",
-                        text=context_instruction
-                    )
-                    logging.info(f"📰 Добавлен полный контекст новости")
-                elif suppress_greeting:
+                # Добавляем инструкцию о приветствиях если нужно
+                if suppress_greeting:
                     chat_history_manager.add_message(
                         from_user="СИСТЕМА",
                         from_id="system",
@@ -1307,95 +1367,6 @@ async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"❌ Ошибка в обработчике on_whats_today: {e}")
 
-async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет случайную новость до 300 символов (без категории в названии)"""
-    try:
-        logging.info("📰 Обработка запроса на случайную новость")
-        
-        chat_id = str(update.effective_chat.id)
-        
-        # Инициализируем кеш отправленных новостей для чата
-        if chat_id not in _sent_news:
-            _sent_news[chat_id] = []
-        
-        # Пытаемся найти новую (не отправленную ранее) новость
-        max_attempts = 15
-        selected_news = None
-        selected_category = None
-        raw_news = None
-        
-        for attempt in range(max_attempts):
-            # Собираем новости
-            news_list = _collect_gnews_articles(limit=15)
-            
-            if not news_list:
-                await update.message.reply_text("Не удалось получить новости. Попробуйте позже.")
-                logging.warning("⚠️  Не удалось собрать новости")
-                return
-            
-            # Выбираем случайную новость
-            selected_category, raw_news = random.choice(news_list)
-            
-            # *** КЛЮЧЕВОЕ: Кешируем ПОЛНЫЙ исходный текст, чтобы избежать дубликатов ***
-            # Проверяем по ПОЛНОМУ исходному тексту (не обрезанному), чтобы отловить дубликаты даже при переформулировке
-            if raw_news not in _sent_news[chat_id]:
-                selected_news = raw_news
-                logging.info(f"✅ Найдена новая новость (попытка {attempt + 1})")
-                break
-            else:
-                logging.debug(f"⏭️  Новость уже отправлялась (попытка {attempt + 1}), пробуем другую")
-        
-        if selected_news is None:
-            # Если все попытки не дали результата, сбрасываем кеш
-            logging.info(f"🔄 Кеш новостей переполнен ({len(_sent_news[chat_id])} новостей), сбрасываем")
-            _sent_news[chat_id] = []
-            selected_news = raw_news
-        
-        # *** НОВОЕ: Добавляем ПОЛНЫЙ текст в кеш ПЕРЕД обработкой GPT ***
-        _sent_news[chat_id].append(selected_news)
-        logging.info(f"📌 Новость добавлена в кеш. Всего: {len(_sent_news[chat_id])}")
-        
-        # Пытаемся обработать через OpenAI если возможно
-        final_news = selected_news
-        if OPENAI_MODEL and _get_openai():
-            try:
-                # Собираем в список для обработки
-                news_for_gpt = [(selected_category, raw_news)]
-                enhanced = _enhance_news_with_gpt(news_for_gpt)
-                
-                if enhanced and len(enhanced) > 0:
-                    # Используем обработанную версию, но всё равно обрезаем до 350
-                    final_news = _truncate_news(enhanced[0], max_length=350)
-                    logging.info(f"✅ Новость обработана через GPT: {final_news[:60]}...")
-            except Exception as e:
-                logging.warning(f"⚠️  Ошибка обработки через GPT: {e}, используем исходный текст")
-                final_news = selected_news
-        
-        # *** ОБНОВЛЕНО: Сохраняем ПОЛНЫЙ контекст для развернутых ответов ***
-        _news_context[chat_id] = {
-            "text": final_news,  # Краткая версия (для отправки пользователю)
-            "raw": raw_news,  # Исходная полная версия (для контекста ответов)
-            "category": selected_category,
-            "timestamp": datetime.now(ZoneInfo(TZ_NAME)),
-            "full_context": f"""НОВОСТЬ ({selected_category.upper()}):
-{raw_news}
-
-КРАТКАЯ ВЕРСИЯ:
-{final_news}"""
-        }
-        logging.info(f"💾 Контекст новости сохранен для чата {chat_id}")
-        
-        # Отправляем ТОЛЬКО текст новости (без категории)
-        await update.message.reply_text(
-            final_news,
-            reply_to_message_id=update.message.message_id
-        )
-        
-        logging.info(f"✅ Новость отправлена: {final_news[:50]}...")
-        
-    except Exception as e:
-        logging.error(f"❌ Ошибка в on_random_news: {e}")
-        await update.message.reply_text("Произошла ошибка при получении новости.")
 
 # === Отладочный хэндлер ===
 async def debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
