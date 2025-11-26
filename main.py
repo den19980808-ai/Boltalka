@@ -754,6 +754,14 @@ def should_respond(update: Update) -> bool:
     logging.info("🚫 Триггер не найден")
     return False
 
+def _check_news_request(text: str) -> bool:
+    """Проверяет, это ли запрос на новость"""
+    return bool(re.search(r'\b(новость|случайная\s+новость|дай\s+новость)\b', text, re.IGNORECASE))
+
+def _check_whats_today_request(text: str) -> bool:
+    """Проверяет, это ли запрос 'что сегодня'"""
+    return bool(re.search(r'\bчто\s+сегодня\??\b', text, re.IGNORECASE))
+
 # ====== ИИ-приветствие «Доброе утро» ======
 
 WEEKDAY_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
@@ -1167,8 +1175,21 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not message_text:
             return
+        
+        # *** НОВОЕ: Проверяем специфичные запросы ПЕРВЫМИ ***
+        # Запрос на случайную новость
+        if _check_news_request(message_text):
+            logging.info(f"📰 Обнаружен запрос на новость: {message_text}")
+            await on_random_news(update, context)
+            return
+        
+        # Запрос "что сегодня?"
+        if _check_whats_today_request(message_text):
+            logging.info(f"🔄 Обнаружен запрос 'что сегодня?': {message_text}")
+            await on_whats_today(update, context)
+            return
             
-        # Используем функцию should_respond для проверки всех триггеров и контекста
+        # Используем функцию should_respond для проверки других триггеров и контекста
         if should_respond(update):
             logging.info(f"⚡ Обнаружен триггер или продолжение диалога: {message_text}")
             
@@ -1432,16 +1453,9 @@ async def reset_conversation_context(update: Update, context: ContextTypes.DEFAU
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
- # Получаем обработчик чата
+    # Получаем обработчик чата
     chat_handler = get_chat_handler()  # Используем эту переменную
     
-    # "что сегодня?"
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
-    
-    # "новость" или "случайная новость"
-    application.add_handler(MessageHandler(filters.Regex(r"(?i)\b(новость|случайная\s+новость|дай\s+новость)\b"), on_random_news))
-
-
     # Обработчик фото
     application.add_handler(MessageHandler(filters.PHOTO, chat_handler_instance.handle_photo_message))
 
@@ -1451,27 +1465,26 @@ def main():
         chat_handler_instance.show_memory_command
     ))
 
-    # Команда для просмотра истории - ДОБАВЬТЕ ЭТО
+    # Команда для просмотра истории
     application.add_handler(MessageHandler(
         filters.Regex(r"(?i)(история|history|историю)"), 
         chat_handler_instance.show_history_command
     ))
 
-    # Команда для экспорта истории - ДОБАВЬТЕ ЭТО
+    # Команда для экспорта истории
     application.add_handler(MessageHandler(
         filters.Regex(r"(?i)(экспорт|export|скачать историю)"), 
         chat_handler_instance.export_history_command
     ))
 
-    # В main() добавьте этот обработчик:
+    # Команда для сброса контекста диалога
     application.add_handler(MessageHandler(
         filters.Regex(r"(?i)(новый диалог|сброс|забудь|start over)"), 
         reset_conversation_context
     ))
 
-
-
-    # триггер "Болтун" - исправленная строка
+    # *** ГЛАВНЫЙ ОБРАБОТЧИК для всех текстовых сообщений ***
+    # Проверяет: новости → "что сегодня" → болтун + контекст
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_trigger))
     
     # отладка — последней (async handler чтобы не возвращать None)
@@ -1483,8 +1496,6 @@ def main():
             logging.error(f"Ошибка в _debug_log_cb: {e}")
 
     application.add_handler(MessageHandler(filters.ALL, _debug_log_cb))
-
-
 
     application.post_init = on_startup
     application.run_polling(close_loop=False)
