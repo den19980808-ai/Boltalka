@@ -5,7 +5,6 @@ import random
 import requests
 import logging
 import atexit
-import base64
 from telegram import Update
 from datetime import datetime, time, date
 from zoneinfo import ZoneInfo
@@ -26,19 +25,14 @@ load_dotenv(dotenv_path="token.env", override=True)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-CALENDARIFIC_API_KEY = os.getenv("CALENDARIFIC_API_KEY")
-API_NINJAS_KEY = os.getenv("API_NINJAS_KEY")
-API_NINJAS_PREMIUM = os.getenv("API_NINJAS_PREMIUM", "false").lower() in ("1", "true", "yes")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")  # GNews API для новостей
 
-# Intelligence.io
-INTELLIGENCE_API_KEY = os.getenv("INTELLIGENCE_API_KEY")
-INTELLIGENCE_MODEL = os.getenv("INTELLIGENCE_MODEL", "openai/gpt-oss-120b")
-INTELLIGENCE_URL = "https://api.intelligence.io.solutions/api/v1/chat/completions"
-
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 _openai_client = None
+
+# Хранилище для контекста новостей по чатам
+_news_context = {}  # {chat_id: {"text": "новость", "raw": "исходная новость", "category": "наука"}}
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
 CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
@@ -448,11 +442,11 @@ def _first_sentence(text: str) -> str:
         return cut
     return text
 
-def _collect_gnews_articles(limit: int = 3) -> list[str]:
+def _collect_gnews_articles(limit: int = 3) -> list[tuple[str, str]]:
     """
     Собирает 2-3 новости из GNews API на АНГЛИЙСКОМ (science + technology).
     Избегает новостей про Россию и русских источников.
-    Возвращает список заголовков для обработки GPT.
+    Возвращает список кортежей (категория, текст новости) для обработки GPT.
     """
     articles = []
     
@@ -520,10 +514,10 @@ def _collect_gnews_articles(limit: int = 3) -> list[str]:
                 
                 seen_titles.add(title)
                 
-                # Сохраняем заголовок + описание для GPT
+                # Сохраняем заголовок + описание для GPT с категорией
                 full_text = f"{title}. {description}" if description else title
-                articles.append(full_text)
-                logging.info(f"✅ Новость добавлена: {title[:60]}")
+                articles.append((category, full_text))
+                logging.info(f"✅ Новость добавлена ({category}): {title[:60]}")
         
         except Exception as e:
             logging.warning(f"❌ Ошибка при получении новостей из GNews ({category}): {e}")
@@ -532,57 +526,85 @@ def _collect_gnews_articles(limit: int = 3) -> list[str]:
     logging.info(f"📊 Собрано {len(articles)} новостей для обработки GPT")
     return articles
 
-def _enhance_news_with_gpt(news_list: list[str]) -> list[str]:
+def _enhance_news_with_gpt(news_list: list[tuple[str, str]]) -> list[str]:
     """
-    Принимает список новостей на АНГЛИЙСКОМ и пропускает их через GPT.
-    GPT переформатирует в 1-2 коротких предложения на РУССКОМ с юмором.
+    Принимает список кортежей (категория, новость) на АНГЛИЙСКОМ и обрабатывает через GPT.
+    GPT переформатирует в 1 короткое предложение (80-120 символов) на РУССКОМ с юмором.
     Возвращает список кратких русских новостей.
     """
     if not news_list:
         return []
     
-    if not OPENAI_MODEL or not _openai_client:
+    if not OPENAI_MODEL or not _get_openai():
         logging.warning("⚠️  OpenAI не доступен, возвращаем новости без обработки")
-        return news_list
+        # Возвращаем обрезанные английские новости если OpenAI недоступен
+        return [_truncate_news(news, 80) for _, news in news_list]
     
     enhanced = []
     
-    for news in news_list:
+    for category, news in news_list:
         try:
+            # Определяем русский текст категории для контекста
+            category_labels = {
+                "science": "научное открытие",
+                "technology": "технологический прорыв"
+            }
+            category_label = category_labels.get(category, "новость")
+            
             prompt = (
-                "You are a news editor for a family chat. Rewrite this science/tech news:\n\n"
+                f"Это {category_label}. Переформатируй в 1 предложение (80-120 символов):\n\n"
                 f'"{news}"\n\n'
-                "REQUIREMENTS:\n"
-                "- 1-2 short sentences MAXIMUM (keep it brief!)\n"
-                "- Write in Russian\n"
-                "- Make it interesting and easy to understand\n"
-                "- You can add light humor or a funny metaphor\n"
-                "- No emojis\n"
-                "- Natural conversational style\n"
-                "- Skip boring details - only the 'wow' factor\n\n"
-                "Good examples:\n"
-                "'Ученые создали новый материал, который прочнее стали, но легче пера — "
-                "скоро может стать основой будущих самолетов и космических кораблей.'\n"
-                "'Телескоп James Webb заметил самую далекую галактику — она была такой молодой, "
-                "что вселенной было всего 300 миллионов лет.'\n\n"
-                "Return ONLY the rewritten news in Russian, nothing else:"
+                "ТРЕБОВАНИЯ:\n"
+                "- ОДНО предложение на русском (80-120 символов)\n"
+                "- Легкий юмор или метафора приветствуется\n"
+                "- Без эмодзи\n"
+                "- Интересно и понятно\n"
+                "- Только суть, никаких лишних деталей\n\n"
+                "ПРИМЕРЫ:\n"
+                "'Ученые нашли метеорит на Марсе — похоже, красная планета тоже собирает камешки'\n"
+                "'Создали нанотрубки для карманных ускорителей — вскоре сможем ускорять атомы дома'\n"
+                "'Разгадали механизм работы препарата — один из лучших дней науки в этом году'\n\n"
+                "Верни ТОЛЬКО переформатированную новость (без кавычек):"
             )
             
-            resp = _intel_chat(prompt, max_tokens=120, temperature=0.8)
+            resp = _intel_chat(prompt, max_tokens=150, temperature=0.8)
             
             if resp:
                 # Санитизируем ответ
-                resp = resp.strip().strip('"').strip("'")
-                if resp and len(resp) > 15:
+                resp = resp.strip().strip('"').strip("'").strip()
+                # Обрезаем до 120 символов если превышает
+                resp = _truncate_news(resp, 120)
+                if resp and len(resp) > 20:
                     enhanced.append(resp)
-                    logging.info(f"✅ Новость обработана GPT: {resp[:70]}")
+                    logging.info(f"✅ Новость обработана GPT ({len(resp)} сим): {resp[:60]}")
                 else:
-                    logging.warning(f"⚠️  GPT вернул пустой или короткий ответ")
+                    logging.warning(f"⚠️  GPT вернул слишком короткий ответ")
             else:
                 logging.warning(f"⚠️  GPT не вернул ответ для новости")
         
         except Exception as e:
             logging.warning(f"❌ Ошибка обработки новости GPT: {e}")
+    
+    logging.info(f"📊 Обработано {len(enhanced)} новостей через GPT")
+    return enhanced
+
+def _truncate_news(text: str, max_length: int = 120) -> str:
+    """Обрезает новость до максимальной длины, стараясь не резать слово"""
+    if len(text) <= max_length:
+        return text
+    
+    # Обрезаем по длине
+    truncated = text[:max_length]
+    
+    # Находим последний пробел перед концом
+    if " " in truncated:
+        truncated = truncated[:truncated.rfind(" ")]
+    
+    # Добавляем многоточие если текст был обрезан
+    if len(text) > len(truncated):
+        truncated = truncated.strip() + "..."
+    
+    return truncated.strip()
     
     logging.info(f"📊 Обработано {len(enhanced)} новостей через GPT")
     return enhanced
@@ -603,26 +625,7 @@ def _birthdays_for_today(target_date: date | None = None) -> list[dict]:
 # --- 4. ОСНОВНАЯ ФУНКЦИЯ ФОРМИРОВАНИЯ ДАЙДЖЕСТА ---
 def build_morning_digest(target_date: date | None = None) -> tuple[str, dict]:
     """
-    Формирует полный утренний дайджест строго по формату:
-    
-    🌅 Доброе утро!
-    
-    📍 Погода:
-    • Город1: min° → max° icon
-    • Город2: min° → max° icon
-    
-    🎉 Государственный праздник.
-    🎂 Дни рождения.
-    (если есть)
-    
-    🌍 Сегодня в мире:
-    — Новость1.
-    — Новость2.
-    (если есть)
-    
-    ✨ РАСШИРЕННОЕ ПОЖЕЛАНИЕ НА ДЕНЬ (юмор, факты, примета)
-    
-    Возвращает (text, weather_map).
+    Формирует полный утренний дайджест в новом компактном формате.
     """
     try:
         if target_date is None:
@@ -637,45 +640,56 @@ def build_morning_digest(target_date: date | None = None) -> tuple[str, dict]:
     parts.append("🌅 Доброе утро!")
     parts.append("")
     
-    # 2. ПОГОДА
+    # 2. ПОГОДА (новый компактный формат)
     weather_map = build_weather_map()
     if weather_map:
-        parts.append("📍 Погода:")
+        parts.append("📌 Погода по городам:")
         for city_ru, _ in CITIES:
             wi = weather_map.get(city_ru)
             if not wi:
                 continue
-            parts.append(f"• {city_ru}: {wi['min']}° → {wi['max']}° {wi['icon']}")
+            # Формат: "Город — min° → max° 🌡️" с двумя пробелами в конце
+            parts.append(f"{city_ru} — {wi['min']}° → {wi['max']}° {wi['icon']}")
         parts.append("")
     
-    # 3. ПРАЗДНИКИ + ДНИ РОЖДЕНИЯ (вместе в одном блоке)
-    bds = _birthdays_for_today(target_date)
-    holidays_block = build_holidays_section(target_date, _intel_chat, bds)
-    if holidays_block and holidays_block.strip():
-        parts.append(holidays_block)
-        parts.append("")
+    # 3. РАЗДЕЛИТЕЛЬ
+    parts.append("∙∙∙")
+    parts.append("")
     
-    # 4. НОВОСТИ (GNews + GPT обработка)
+    # 4. НОВОСТИ (компактный формат 80-120 символов)
     raw_news = _collect_gnews_articles(limit=3)  # Берем 2-3 новости
-    news = _enhance_news_with_gpt(raw_news)      # Пропускаем через GPT
+    news = _enhance_news_with_gpt(raw_news)      # Пропускаем через GPT (обрезка там)
     if news:
-        parts.append("🌍 Сегодня в мире:")
+        parts.append("📰 Новости дня:")
         for n in news:
-            parts.append(f"— {n}")
+            parts.append(f"• {n}")
         parts.append("")
     
-    # 5. РАЗДЕЛИТЕЛЬ И РАСШИРЕННОЕ ПОЖЕЛАНИЕ НА ДЕНЬ (конец!)
-    parts.append("─" * 40)  # Разделитель линия
+    # 5. РАЗДЕЛИТЕЛЬ
+    parts.append("∙∙∙")
     parts.append("")
     
-    # Обворачиваем пожелание в blockquote для Telegram
+    # 6. ПОЖЕЛАНИЕ НА ДЕНЬ (основное + blockquote с цитатой)
     wish_text = ai_generate_wish_extended_intel()
-    blockquote_wish = "<blockquote>" + wish_text + "</blockquote>"
-    parts.append("✨ " + blockquote_wish)
+    
+    parts.append("✨ Хорошего дня!")
     parts.append("")
     
-    # 6. ФИНАЛЬНОЕ ЗАКЛЮЧЕНИЕ
-    parts.append("Отличного дня! 🌟")
+    # Разделяем основное пожелание от цитаты по пустой строке
+    if "\n\n" in wish_text:
+        main_wish, citation = wish_text.split("\n\n", 1)
+        parts.append(main_wish)
+        parts.append("<blockquote>")
+        parts.append(citation)
+        parts.append("</blockquote>")
+    else:
+        # Fallback если нет разделения
+        parts.append(wish_text)
+    
+    parts.append("")
+    
+    # 7. ФИНАЛЬНОЕ ЗАКЛЮЧЕНИЕ
+    parts.append("Увидимся завтра")
     
     text = "\n".join(p for p in parts if p is not None)
     return text, weather_map
@@ -721,7 +735,16 @@ def should_respond(update: Update) -> bool:
             logging.info(f"⚡ Обнаружен триггер: {trigger}")
             return True
 
- # Проверяем, является ли сообщение продолжением диалога
+    # *** НОВОЕ: Проверяем вопросы о новостях ***
+    if chat_id in _news_context:
+        # Если есть сохраненная новость, проверяем вопросы о ней
+        is_question = '?' in text or any(word in text for word in ['что', 'какой', 'какая', 'какие', 'кто', 'когда', 'где', 'почему', 'как', 'зачем', 'откуда'])
+        
+        if is_question:
+            logging.info(f"❓ Обнаружен вопрос о новости в контексте: {text}")
+            return True
+
+    # Проверяем, является ли сообщение продолжением диалога
     handler = get_chat_handler()
     if handler and handler.should_continue_conversation(chat_id, text):
         chat_id = str(update.effective_chat.id)
@@ -1039,64 +1062,71 @@ def ai_generate_comments_batch_intel(city_items):
 # Пожелание: 100-200 символов с юмором и приметой/шуткой/фактом/советом/новостью
 def ai_generate_wish_extended_intel() -> str:
     """
-    Генерирует компактное пожелание на день (100-200 символов):
-    - Основное пожелание с юмором
-    - Случайная секция: примета, шутка, факт, совет или новость
+    Генерирует пожелание на день в формате:
+    Основное пожелание (30-50 символов)
     
-    Каждый раз новое!
+    ПУСТАЯ СТРОКА
+    
+    Цитата (примета/шутка/факт/совет/новость - без метки)
     """
     tz = ZoneInfo(os.getenv("TZ", "Europe/Amsterdam"))
     now_local = datetime.now(tz)
-    date_human = human_ru_date(now_local)
     weekday = WEEKDAY_RU[now_local.weekday()]
     
     # Получаем случайную секцию
     section_label, section_text = get_random_wish_section()
     
     prompt = (
-        "Ты пишешь короткое пожелание на день для чата.\n\n"
+        "Ты пишешь короткое пожелание на день для семейного чата.\n\n"
+        "ФОРМАТ (без кавычек):\n"
+        "Основное пожелание (30-50 символов, мотивирующее)\n"
+        "ПУСТАЯ СТРОКА\n"
+        "Только текст цитаты БЕЗ метки (80-100 символов)\n\n"
         "ТРЕБОВАНИЯ:\n"
-        "- Одно предложение на русском (50-80 слов, 100-150 символов)\n"
-        "- Теплое и позитивное, с лёгким юмором\n"
-        "- Максимум 1 эмодзи\n"
-        "- Потом пустая строка\n"
-        f"- Потом строка: '{section_label}: [текст]'\n"
-        "- Всего 100-200 символов\n\n"
-        "ПРИМЕРЫ:\n"
-        "'Пусть сегодня улыбка не сходит с лица, а кофе не остывает в кружке ☕\n\n"
-        "Примета: если встретишь кота утром — день будет удачным.'\n\n"
-        "'Замечай маленькие радости, смейся от души и помни: ты сильнее, чем думаешь 💫\n\n"
-        "Шутка: мотивация — это как дезодорант, её нужно применять каждый день.'\n\n"
-        f"КОНТЕКСТ: {weekday}, {date_human}\n"
-        "Создай ОРИГИНАЛЬНОЕ пожелание (не копируй примеры):"
+        "- Русский язык\n"
+        "- Тёплое и позитивное\n"
+        "- Максимум 1 эмодзи на основное пожелание\n"
+        "- Легкий юмор\n"
+        "- Естественный разговорный стиль\n"
+        "- БЕЗ КАВЫЧЕК в ответе\n"
+        "- БЕЗ слова 'Метка:' перед цитатой\n"
+        "- Всего 150-200 символов\n\n"
+        f"КОНТЕКСТ: {weekday}\n"
+        f"МЕТКА И ТЕКСТ: {section_label}: {section_text}\n\n"
+        "ПРИМЕРЫ ПРАВИЛЬНОГО ФОРМАТА:\n"
+        "Замечай красивое, смейся искренне ☕\n"
+        "\n"
+        "если встретишь кота — день будет удачным.\n\n"
+        "Пусть удача касается тебя на каждом шагу 💫\n"
+        "\n"
+        "мотивация — это дезодорант, её нужно применять каждый день.\n\n"
+        "Создай ОРИГИНАЛЬНОЕ пожелание в этом формате (БЕЗ кавычек, БЕЗ 'Метка:'):"
     )
     
     for attempt in range(2):
         raw = _intel_chat(prompt, max_tokens=250, temperature=0.8)
         
         if raw and len(raw) > 50:
-            text = raw.strip()
-            if 100 <= len(text) <= 300:  # Проверяем размер
+            text = raw.strip().strip('"').strip("'")  # Удаляем кавычки если есть
+            # Проверяем, что есть пустая строка и две части
+            if "\n\n" in text and len(text) <= 300:
                 return text
     
     # Стабильный компактный фоллбэк без AI
-    wishes = [
-        f"Пусть день дарует маленькие победы и большие улыбки 💫\n\n{section_label}: {section_text}",
-        f"Замечай красивое, смейся искренне, живи полнотой 🌟\n\n{section_label}: {section_text}",
-        f"Пусть удача касается тебя на каждом шагу ☕\n\n{section_label}: {section_text}",
-        f"Этот день — твой, наполни его радостью и добром 🙂\n\n{section_label}: {section_text}",
-        f"Кофе горячий, улыбка теплая, день удачный 💛\n\n{section_label}: {section_text}",
+    # Важно: метка НЕ включается в цитату, только текст!
+    wishes_templates = [
+        "Замечай красивое, смейся искренне 💫\n\n{text}",
+        "Пусть удача касается тебя на каждом шагу ☕\n\n{text}",
+        "Этот день — твой, наполни его радостью 🌟\n\n{text}",
+        "Кофе горячий, улыбка теплая, день удачный 💛\n\n{text}",
+        "Живи как будто каждый день — особенный день 🙂\n\n{text}",
     ]
     
-    choice = hash(date_human) % len(wishes)
-    return wishes[choice]
+    choice = hash(weekday) % len(wishes_templates)
+    return wishes_templates[choice].format(text=section_text)
 
 
 # Старая версия для совместимости
-def ai_generate_wish_240_intel() -> str:
-    """Для обратной совместимости — вызывает новую расширенную версию"""
-    return ai_generate_wish_extended_intel()
-
 
 
 # Отрисовка блока погоды: эмодзи после температуры, пустая строка между пунктами, без двоеточия
@@ -1151,6 +1181,33 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Получаем ответ от chat_handler
             handler = get_chat_handler()
             if handler:
+                # *** ОБНОВЛЕНО: Добавляем ПОЛНЫЙ контекст новости для развернутых ответов ***
+                if chat_id in _news_context:
+                    news_ctx = _news_context[chat_id]
+                    
+                    # Добавляем полный контекст новости в историю с инструкцией для развернутого ответа
+                    context_instruction = f"""[КОНТЕКСТ НОВОСТИ - ОТВЕЧАЙ РАЗВЕРНУТО!]
+Пользователь спрашивает о новости из категории: {news_ctx['category'].upper()}
+
+ПОЛНАЯ ИНФОРМАЦИЯ О НОВОСТИ:
+{news_ctx['full_context']}
+
+ИНСТРУКЦИЯ:
+- Отвечай на вопрос пользователя, основываясь на этой новости
+- Ответ должен быть РАЗВЕРНУТЫМ (300-500+ символов)
+- Пиши ЕСТЕСТВЕННО, как реальный человек
+- Добавь контекст, объяснения, детали
+- Не пиши односложно и кратко
+- Если нужно, добавь релевантную информацию из общих знаний
+- Будь дружелюбным и информативным"""
+                    
+                    chat_history_manager.add_message(
+                        from_user="СИСТЕМА",
+                        from_id="system",
+                        text=context_instruction
+                    )
+                    logging.info(f"📰 Добавлен полный контекст новости с инструкцией на развернутый ответ")
+                
                 response = await handler.generate_contextual_response(update, context)
                 
                 if response:
@@ -1174,7 +1231,7 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # Если это не вопрос, завершаем диалог
                         handler.end_conversation(chat_id)
                     
-                    logging.info(f"✅ Ответ отправлен: {response[:50]}...")
+                    logging.info(f"✅ Развернутый ответ отправлен ({len(response)} символов): {response[:50]}...")
                 else:
                     logging.warning("❌ Chat handler вернул пустой ответ")
                     handler.end_conversation(chat_id)
@@ -1193,7 +1250,6 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Произошла ошибка при обработке сообщения 🛠️")
         except:
             pass
-
 # === Хэндлер "что сегодня?" ===
 async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1201,6 +1257,83 @@ async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
         await send_digest(context, update.effective_chat.id)
     except Exception as e:
         logging.error(f"❌ Ошибка в обработчике on_whats_today: {e}")
+
+async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет случайную новость до 300 символов"""
+    try:
+        logging.info("📰 Обработка запроса на случайную новость")
+        
+        chat_id = str(update.effective_chat.id)
+        
+        # Собираем новости
+        news_list = _collect_gnews_articles(limit=5)
+        
+        if not news_list:
+            await update.message.reply_text("Не удалось получить новости. Попробуйте позже.")
+            logging.warning("⚠️  Не удалось собрать новости")
+            return
+        
+        # Выбираем случайную новость
+        category, raw_news = random.choice(news_list)
+        
+        # Обрезаем до 300 символов
+        news_text = _truncate_news(raw_news, max_length=300)
+        
+        # Пытаемся обработать через OpenAI если возможно
+        if OPENAI_MODEL and _get_openai():
+            try:
+                # Собираем в список для обработки
+                news_for_gpt = [(category, raw_news)]
+                enhanced = _enhance_news_with_gpt(news_for_gpt)
+                
+                if enhanced and len(enhanced) > 0:
+                    # Используем обработанную версию, но всё равно обрезаем до 300
+                    news_text = _truncate_news(enhanced[0], max_length=300)
+                    logging.info(f"✅ Новость обработана через GPT: {news_text[:60]}...")
+            except Exception as e:
+                logging.warning(f"⚠️  Ошибка обработки через GPT: {e}, используем исходный текст")
+                news_text = _truncate_news(raw_news, max_length=300)
+        else:
+            news_text = _truncate_news(raw_news, max_length=300)
+        
+        # *** ОБНОВЛЕНО: Сохраняем ПОЛНЫЙ контекст для развернутых ответов ***
+        _news_context[chat_id] = {
+            "text": news_text,  # Краткая версия (для отправки пользователю)
+            "raw": raw_news,  # Исходная полная версия (для контекста ответов)
+            "category": category,
+            "timestamp": datetime.now(ZoneInfo(TZ_NAME)),
+            "full_context": f"""НОВОСТЬ ({category.upper()}):
+{raw_news}
+
+КРАТКАЯ ВЕРСИЯ:
+{news_text}"""
+        }
+        logging.info(f"💾 Контекст новости сохранен для чата {chat_id}")
+        
+        # Формируем сообщение с эмодзи
+        emoji_map = {
+            "science": "🔬",
+            "technology": "💻",
+            "business": "💼",
+            "health": "⚕️",
+            "sports": "⚽",
+            "entertainment": "🎬"
+        }
+        emoji = emoji_map.get(category, "📰")
+        
+        message = f"{emoji} *{category.upper()}*\n\n{news_text}"
+        
+        await update.message.reply_text(
+            message,
+            reply_to_message_id=update.message.message_id,
+            parse_mode="Markdown"
+        )
+        
+        logging.info(f"✅ Случайная новость отправлена: {news_text[:50]}...")
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка в on_random_news: {e}")
+        await update.message.reply_text("Произошла ошибка при получении новости.")
 
 # === Отладочный хэндлер ===
 async def debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1304,6 +1437,9 @@ def main():
     
     # "что сегодня?"
     application.add_handler(MessageHandler(filters.Regex(r"(?i)\bчто\s+сегодня\??\b"), on_whats_today))
+    
+    # "новость" или "случайная новость"
+    application.add_handler(MessageHandler(filters.Regex(r"(?i)\b(новость|случайная\s+новость|дай\s+новость)\b"), on_random_news))
 
 
     # Обработчик фото
