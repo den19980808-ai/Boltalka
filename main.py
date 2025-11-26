@@ -544,7 +544,7 @@ def _enhance_news_with_gpt(news_list: list[tuple[str, str]]) -> list[str]:
     if not OPENAI_MODEL or not _get_openai():
         logging.warning("⚠️  OpenAI не доступен, возвращаем новости без обработки")
         # Возвращаем обрезанные английские новости если OpenAI недоступен
-        return [_truncate_news(news, 80) for _, news in news_list]
+        return [_truncate_news(news, 350) for _, news in news_list]
     
     enhanced = []
     
@@ -558,29 +558,29 @@ def _enhance_news_with_gpt(news_list: list[tuple[str, str]]) -> list[str]:
             category_label = category_labels.get(category, "новость")
             
             prompt = (
-                f"Это {category_label}. Переформатируй в 1 предложение (80-120 символов):\n\n"
+                f"Это {category_label}. Переформатируй в 2-3 предложения (250-350 символов):\n\n"
                 f'"{news}"\n\n'
                 "ТРЕБОВАНИЯ:\n"
-                "- ОДНО предложение на русском (80-120 символов)\n"
+                "- 2-3 предложения на русском (250-350 символов)\n"
+                "- Подробнее и понятнее, чем оригинал\n"
+                "- Объясни ЧТО произошло и ПОЧЕМУ это важно\n"
                 "- Легкий юмор или метафора приветствуется\n"
                 "- Без эмодзи\n"
-                "- Интересно и понятно\n"
-                "- Только суть, никаких лишних деталей\n\n"
+                "- Естественно и интересно\n\n"
                 "ПРИМЕРЫ:\n"
-                "'Ученые нашли метеорит на Марсе — похоже, красная планета тоже собирает камешки'\n"
-                "'Создали нанотрубки для карманных ускорителей — вскоре сможем ускорять атомы дома'\n"
-                "'Разгадали механизм работы препарата — один из лучших дней науки в этом году'\n\n"
+                "'Ученые впервые смогли увидеть темную материю в лаборатории. Это крупный прорыв в физике, который поможет лучше понять структуру Вселенной. Теперь ученые смогут проводить тесты, которые раньше считались невозможными.'\n"
+                "'Компания создала нанотрубки толщиной в несколько атомов, которые могут использоваться в квантовых компьютерах. Это значительно ускорит развитие технологии. Через несколько лет мы можем ожидать компьютеры, которые будут работать в миллионы раз быстрее.'\n\n"
                 "Верни ТОЛЬКО переформатированную новость (без кавычек):"
             )
             
-            resp = _intel_chat(prompt, max_tokens=150, temperature=0.8)
+            resp = _intel_chat(prompt, max_tokens=400, temperature=0.8)
             
             if resp:
                 # Санитизируем ответ
                 resp = resp.strip().strip('"').strip("'").strip()
-                # Обрезаем до 120 символов если превышает
-                resp = _truncate_news(resp, 120)
-                if resp and len(resp) > 20:
+                # Обрезаем до 350 символов если превышает
+                resp = _truncate_news(resp, 350)
+                if resp and len(resp) > 40:
                     enhanced.append(resp)
                     logging.info(f"✅ Новость обработана GPT ({len(resp)} сим): {resp[:60]}")
                 else:
@@ -1319,13 +1319,14 @@ async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sent_news[chat_id] = []
         
         # Пытаемся найти новую (не отправленную ранее) новость
-        max_attempts = 10
+        max_attempts = 15
         selected_news = None
         selected_category = None
+        raw_news = None
         
         for attempt in range(max_attempts):
             # Собираем новости
-            news_list = _collect_gnews_articles(limit=10)
+            news_list = _collect_gnews_articles(limit=15)
             
             if not news_list:
                 await update.message.reply_text("Не удалось получить новости. Попробуйте позже.")
@@ -1335,23 +1336,30 @@ async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Выбираем случайную новость
             selected_category, raw_news = random.choice(news_list)
             
-            # Обрезаем до 300 символов
-            news_text = _truncate_news(raw_news, max_length=300)
+            # *** КЛЮЧЕВОЕ: Кешируем исходный текст, чтобы избежать дубликатов после GPT ***
+            # Обрезаем для проверки в кеше
+            raw_truncated = _truncate_news(raw_news, max_length=350)
             
-            # Проверяем, не отправляли ли уже эту новость
-            if news_text not in _sent_news[chat_id]:
-                selected_news = news_text
+            # Проверяем по исходному тексту, а не по обработанному
+            if raw_truncated not in _sent_news[chat_id]:
+                selected_news = raw_truncated
+                logging.info(f"✅ Найдена новая новость (попытка {attempt + 1})")
                 break
             else:
-                logging.debug(f"⏭️  Новость уже отправлялась, пропускаем")
+                logging.debug(f"⏭️  Новость уже отправлялась (попытка {attempt + 1}), пробуем другую")
         
         if selected_news is None:
             # Если все попытки не дали результата, сбрасываем кеш
-            logging.info(f"🔄 Кеш новостей переполнен, сбрасываем")
+            logging.info(f"🔄 Кеш новостей переполнен ({len(_sent_news[chat_id])} новостей), сбрасываем")
             _sent_news[chat_id] = []
-            selected_news = news_text
+            selected_news = _truncate_news(raw_news, max_length=350)
+        
+        # *** НОВОЕ: Добавляем в кеш ПЕРЕД обработкой GPT ***
+        _sent_news[chat_id].append(selected_news)
+        logging.info(f"📌 Новость добавлена в кеш. Всего: {len(_sent_news[chat_id])}")
         
         # Пытаемся обработать через OpenAI если возможно
+        final_news = selected_news
         if OPENAI_MODEL and _get_openai():
             try:
                 # Собираем в список для обработки
@@ -1359,18 +1367,16 @@ async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 enhanced = _enhance_news_with_gpt(news_for_gpt)
                 
                 if enhanced and len(enhanced) > 0:
-                    # Используем обработанную версию, но всё равно обрезаем до 300
-                    selected_news = _truncate_news(enhanced[0], max_length=300)
-                    logging.info(f"✅ Новость обработана через GPT: {selected_news[:60]}...")
+                    # Используем обработанную версию, но всё равно обрезаем до 350
+                    final_news = _truncate_news(enhanced[0], max_length=350)
+                    logging.info(f"✅ Новость обработана через GPT: {final_news[:60]}...")
             except Exception as e:
                 logging.warning(f"⚠️  Ошибка обработки через GPT: {e}, используем исходный текст")
-        
-        # Добавляем в кеш отправленных
-        _sent_news[chat_id].append(selected_news)
+                final_news = selected_news
         
         # *** ОБНОВЛЕНО: Сохраняем ПОЛНЫЙ контекст для развернутых ответов ***
         _news_context[chat_id] = {
-            "text": selected_news,  # Краткая версия (для отправки пользователю)
+            "text": final_news,  # Краткая версия (для отправки пользователю)
             "raw": raw_news,  # Исходная полная версия (для контекста ответов)
             "category": selected_category,
             "timestamp": datetime.now(ZoneInfo(TZ_NAME)),
@@ -1378,17 +1384,17 @@ async def on_random_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {raw_news}
 
 КРАТКАЯ ВЕРСИЯ:
-{selected_news}"""
+{final_news}"""
         }
         logging.info(f"💾 Контекст новости сохранен для чата {chat_id}")
         
-        # *** ИЗМЕНЕНО: Отправляем БЕЗ категории, сразу саму новость ***
+        # Отправляем ТОЛЬКО текст новости (без категории)
         await update.message.reply_text(
-            selected_news,
+            final_news,
             reply_to_message_id=update.message.message_id
         )
         
-        logging.info(f"✅ Случайная новость отправлена: {selected_news[:50]}...")
+        logging.info(f"✅ Новость отправлена: {final_news[:50]}...")
         
     except Exception as e:
         logging.error(f"❌ Ошибка в on_random_news: {e}")
