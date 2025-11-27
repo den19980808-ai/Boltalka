@@ -26,7 +26,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
-GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")  # GNews API для новостей
+NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY", "cd6e0f14d879486a9dbb6ec85d970178")  # NewsAPI для новостей
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 _openai_client = None
@@ -403,9 +403,9 @@ def build_weather_map() -> dict:
     
     return out
 
-# --- 2. НОВОСТИ из GNews API (science + technology) ---
-GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "f02e65f57c9ee6ea3aefc79db981a17b")
-GNEWS_BASE_URL = "https://gnews.io/api/v4/top-headlines"
+# --- 2. НОВОСТИ из NewsAPI (science + technology + general) ---
+NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY", "cd6e0f14d879486a9dbb6ec85d970178")
+NEWSAPI_BASE_URL = "https://newsapi.org/v2/top-headlines"
 
 # Крупные авторитетные источники новостей (для фильтра популярности)
 TRUSTED_SOURCES = {
@@ -543,44 +543,48 @@ def _first_sentence(text: str) -> str:
     return text
 
 def _collect_digest_news() -> list[dict]:
-    """Собирает 3 уникальные популярные новости из разных топиков в порядке: 
-    science → general → technology → health (без entertainment)
+    """Собирает 3 уникальные популярные новости из разных категорий: 
+    science → technology → general
     Берёт самые популярные мировые новости, а не локальные"""
     
-    # Топики в нужном порядке (entertainment убран)
-    topics = ["science", "general", "technology", "health"]
+    # Категории в нужном порядке (согласно рекомендации: science, technology, general)
+    categories = ["science", "technology", "general"]
     news_list = []
     
-    for topic in topics:
-        if len(news_list) >= 3:  # Нужны 3 новости из разных топиков
+    for category in categories:
+        if len(news_list) >= 3:  # Нужны 3 новости из разных категорий
             break
             
         try:
             params = {
-                "category": topic,
-                "lang": "en",
-                "sortby": "relevance",  # Relevance для популярных новостей
-                "max": 25,  # Берём много, чтобы отфильтровать и найти популярные
-                "apikey": GNEWS_API_KEY
+                "category": category,
+                "language": "en",
+                "sortBy": "popularity",  # Popularity для популярных новостей
+                "pageSize": 25,  # Берём много, чтобы отфильтровать и найти популярные
+                "apiKey": NEWSAPI_API_KEY
             }
-            response = requests.get(GNEWS_BASE_URL, params=params, timeout=5)
+            response = requests.get(NEWSAPI_BASE_URL, params=params, timeout=5)
             if response.status_code != 200:
-                logging.debug(f"⚠️ GNews API вернул статус {response.status_code} для {topic}")
+                logging.debug(f"⚠️ NewsAPI вернул статус {response.status_code} для категории {category}")
                 continue
             
             data = response.json()
             articles = data.get("articles", [])
-            logging.info(f"📰 Топик '{topic}': получено {len(articles)} статей")
+            logging.info(f"📰 Категория '{category}': получено {len(articles)} статей")
             
-            # Ищем первую подходящую ПОПУЛЯРНУЮ новость из этого топика
-            # Сначала ищем в авторитетных источниках и популярные, потом остальные
-            found_in_topic = False
+            # Ищем первую подходящую ПОПУЛЯРНУЮ новость из этой категории
+            # Сначала ищем в авторитетных источниках и популярные
+            found_in_category = False
             candidates = []  # (article, is_trusted, is_popular, source)
             
             for article in articles:
-                title = article.get("title", "")
-                description = article.get("description", "")
-                source = article.get("source", {}).get("name", "Unknown")
+                title = article.get("title") or ""
+                description = article.get("description") or ""
+                source = article.get("source", {}).get("name") or "Unknown"
+                
+                # Пропускаем статьи без заголовка
+                if not title or not isinstance(title, str):
+                    continue
                 
                 # Пропускаем, если уже показывали эту новость сегодня
                 if title in _shown_news_today:
@@ -592,51 +596,53 @@ def _collect_digest_news() -> list[dict]:
                     logging.debug(f"🚫 Пропущена табу-новость: {title[:50]}")
                     continue
                 
-                # Пропускаем локальные источники (GhanaWeb, BusinessGhana и т.д.)
-                source_lower = source.lower()
+                # Пропускаем локальные источники
+                source_lower = (source or "").lower()
                 if any(x in source_lower for x in ["ghana", "ghanaian", "africa", "africana", "nrl", "afl"]):
                     logging.debug(f"⚠️ Локальный источник: {source}")
                     continue
                 
                 is_trusted = _is_source_trusted(source)
-                is_popular = _is_news_popular(title, description)
+                is_popular = _is_news_popular(title, description or "")
                 
                 candidates.append((article, is_trusted, is_popular, source))
             
             # Сортируем: авторитетные + популярные вперёд
-            # Для всех топиков требуем популярность
-            # Отфильтруем непопулярные кандидаты
+            # Для всех категорий требуем популярность
             candidates = [(a, t, p, s) for a, t, p, s in candidates if p]
             candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
             
             for article, is_trusted, is_popular, source in candidates:
-                title = article.get("title", "")
-                description = article.get("description", "")
+                title = (article.get("title") or "").strip()
+                description = (article.get("description") or "").strip()
                 
-                # Полный текст для анализа GPT
-                full_text = f"{title}. {description}" if description else title
+                # Полный текст для анализа GPT (защита от None)
+                if title:
+                    full_text = f"{title}. {description}".strip() if description else title
+                else:
+                    continue
                 if full_text:
                     news_list.append({
                         "title": title,
                         "full_text": full_text,
-                        "topic": topic,
+                        "category": category,
                         "source": source
                     })
                     _shown_news_today.add(title)
-                    found_in_topic = True
+                    found_in_category = True
                     trust_mark = "✓ авторитетный" if is_trusted else "⚠️ локальный"
                     pop_mark = "★ популярная" if is_popular else "○ специализированная"
-                    logging.info(f"✅ Нашли в топике '{topic}' ({trust_mark} {pop_mark}, {source}): {title[:60]}...")
+                    logging.info(f"✅ Нашли в категории '{category}' ({trust_mark} {pop_mark}, {source}): {title[:60]}...")
                     break
             
-            if not found_in_topic:
-                logging.info(f"⚠️ Подходящих новостей не найдено в топике '{topic}'")
+            if not found_in_category:
+                logging.info(f"⚠️ Подходящих новостей не найдено в категории '{category}'")
                 
         except Exception as e:
-            logging.error(f"❌ Ошибка при загрузке новостей из {topic}: {e}")
+            logging.error(f"❌ Ошибка при загрузке новостей из {category}: {e}")
             continue
     
-    logging.info(f"✅ Отобрано {len(news_list)} новостей из разных топиков (всего сегодня: {len(_shown_news_today)})")
+    logging.info(f"✅ Отобрано {len(news_list)} новостей из разных категорий (всего сегодня: {len(_shown_news_today)})")
     return news_list
 
 def _analyze_news_with_gpt(news_items: list[dict]) -> list[dict]:
