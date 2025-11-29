@@ -8,8 +8,112 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 from typing import Dict, List, Any
+from abc import ABC, abstractmethod
 
 EMOJI_RE_SIMPLE = re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000026FF]", flags=re.UNICODE)
+
+
+# ============= Специализированные сервисы =============
+
+class UserMemoryService:
+    """Сервис управления памятью о пользователях"""
+    
+    def __init__(self, memory_file: str = "user_memory.json"):
+        self.memory_file = memory_file
+        self.memory = self._load_memory()
+        self._cache = {}  # Кэш для оптимизации доступа
+    
+    def _load_memory(self) -> Dict:
+        """Загружает память пользователей из файла"""
+        if os.path.exists(self.memory_file):
+            try:
+                with open(self.memory_file, "r", encoding="utf-8") as f:
+                    memory_data = json.load(f)
+                logging.info(f"🧠 Загружена память: {len(memory_data)} пользователей")
+                return memory_data
+            except Exception as e:
+                logging.error(f"❌ Ошибка загрузки памяти: {e}")
+        return {}
+    
+    def save(self) -> None:
+        """Сохраняет память в файл"""
+        try:
+            with open(self.memory_file, "w", encoding="utf-8") as f:
+                json.dump(self.memory, f, ensure_ascii=False, indent=2)
+            logging.info(f"💾 Память сохранена: {len(self.memory)} пользователей")
+        except Exception as e:
+            logging.error(f"❌ Ошибка сохранения памяти: {e}")
+    
+    def remember(self, user_id: int, key: str, value: str) -> None:
+        """Добавляет или обновляет запись о пользователе"""
+        user_id_str = str(user_id)
+        if user_id_str not in self.memory:
+            self.memory[user_id_str] = {}
+        self.memory[user_id_str][key] = value
+        self._cache.pop(user_id_str, None)  # Инвалидируем кэш
+        self.save()
+    
+    def recall(self, user_id: int, key: str) -> Any:
+        """Извлекает запись о пользователе"""
+        user_id_str = str(user_id)
+        return self.memory.get(user_id_str, {}).get(key)
+    
+    def get_all(self, user_id: int) -> Dict:
+        """Возвращает всю память о пользователе"""
+        user_id_str = str(user_id)
+        return self.memory.get(user_id_str, {})
+
+
+class ConversationContextManager:
+    """Управление контекстом диалога с таймаутом"""
+    
+    DIALOG_TIMEOUT_SECONDS = 600  # 10 минут
+    
+    def __init__(self):
+        self.contexts: Dict[str, Dict] = {}
+    
+    def start_or_update(self, chat_id: str, bot_question: str = None) -> None:
+        """Обновляет контекст диалога"""
+        if chat_id not in self.contexts:
+            self.contexts[chat_id] = {
+                'last_bot_question': None,
+                'last_interaction_time': None,
+                'is_awaiting_reply': False
+            }
+        
+        if bot_question:
+            self.contexts[chat_id]['last_bot_question'] = bot_question
+            self.contexts[chat_id]['is_awaiting_reply'] = True
+        
+        self.contexts[chat_id]['last_interaction_time'] = datetime.now()
+    
+    def should_continue(self, chat_id: str, user_message: str, response_checker) -> bool:
+        """Проверяет, продолжить ли диалог"""
+        if chat_id not in self.contexts:
+            return False
+        
+        context = self.contexts[chat_id]
+        
+        # Проверяем таймаут
+        if context['last_interaction_time']:
+            time_diff = datetime.now() - context['last_interaction_time']
+            if time_diff.total_seconds() > self.DIALOG_TIMEOUT_SECONDS:
+                return False
+        
+        # Если бот ожидает ответа
+        if context['is_awaiting_reply']:
+            return True
+        
+        # Проверяем, является ли ответом на вопрос бота
+        if context['last_bot_question'] and response_checker(user_message, context['last_bot_question']):
+            return True
+        
+        return False
+    
+    def end(self, chat_id: str) -> None:
+        """Завершает диалог"""
+        if chat_id in self.contexts:
+            self.contexts[chat_id]['is_awaiting_reply'] = False
 
 def _sanitize_boltun_reply(text: str, user_message: str, max_sentences: int = 2, max_chars: int = 450) -> str:
     """Обрезает длинные рассуждения, убирает лишние вопросы и эмодзи, возвращает компактный ответ."""
@@ -110,71 +214,29 @@ class ChatHandler:
         self.history_manager = history_manager
         self.conversations = {}
         self.user_stats = {}
-        self.memory_file = "user_memory.json"  # Добавьте это
-        self.memory = self._load_memory()
-        self.conversation_context = {}
         
-    # === 🧠 Блок работы с памятью ===
-    def _load_memory(self):
-        """Загружает память пользователей из файла"""
-        if os.path.exists(self.memory_file):
-            try:
-                with open(self.memory_file, "r", encoding="utf-8") as f:
-                    memory_data = json.load(f)
-                user_count = len(memory_data)
-                total_entries = sum(len(entries) for entries in memory_data.values())
-                logging.info(f"🧠 Загружена память: {user_count} пользователей, {total_entries} записей")
-                return memory_data
-            except Exception as e:
-                logging.error(f"❌ Ошибка загрузки памяти: {e}")
-        else:
-            logging.info("🧠 Файл памяти не найден, создаём новую память")
-        return {}
-
-    def _save_memory(self):
-        """Сохраняет память пользователей в файл"""
-        try:
-            user_count = len(self.memory)
-            total_entries = sum(len(entries) for entries in self.memory.values())
-            
-            with open(self.memory_file, "w", encoding="utf-8") as f:
-                json.dump(self.memory, f, ensure_ascii=False, indent=2)
-            
-            logging.info(f"💾 Память сохранена: {user_count} пользователей, {total_entries} записей")
-                
-        except Exception as e:
-            logging.error(f"❌ Ошибка сохранения памяти: {e}")
-
-    def remember(self, user_id: int, key: str, value: str):
-        """Добавляет или обновляет запись о пользователе"""
-        user_id_str = str(user_id)
-        
-        if user_id_str not in self.memory:
-            self.memory[user_id_str] = {}
-            logging.info(f"🧠 Создан новый пользователь: {user_id_str}")
-        
-        self.memory[user_id_str][key] = value
-        self._save_memory()
-        logging.info(f"✅ Запись для {user_id_str}: {key} = '{value}'")
-
-    def recall(self, user_id: int, key: str):
-        """Извлекает запись о пользователе"""
-        user_id_str = str(user_id)
-        value = self.memory.get(user_id_str, {}).get(key)
-        
-        if value:
-            logging.info(f"🔍 Найдена запись для {user_id_str}: {key} = '{value}'")
-        else:
-            logging.info(f"❓ Запись не найдена для {user_id_str}: {key}")
-            
-        return value
-
-    def get_user_memory(self, user_id: int):
+        # Инициализируем специализированные сервисы
+        self.memory_service = UserMemoryService("user_memory.json")
+        self.context_manager = ConversationContextManager()
+    
+    # === 🧠 Прокси методы для памяти (для совместимости) ===
+    def remember(self, user_id: int, key: str, value: str) -> None:
+        """Запоминает информацию о пользователе"""
+        self.memory_service.remember(user_id, key, value)
+    
+    def recall(self, user_id: int, key: str) -> Any:
+        """Вспоминает информацию о пользователе"""
+        return self.memory_service.recall(user_id, key)
+    
+    def get_user_memory(self, user_id: int) -> Dict:
         """Возвращает всю память о пользователе"""
-        user_id_str = str(user_id)
-        memory = self.memory.get(user_id_str, {})
-        logging.info(f"📊 Полная память пользователя {user_id_str}: {len(memory)} записей")
-        return memory
+        return self.memory_service.get_all(user_id)
+    
+    def _save_memory(self) -> None:
+        """Сохраняет память в файл (для совместимости)"""
+        self.memory_service.save()
+        
+    # === 🧠 Анализ содержания сообщений ===
 
     def remember_conversation_topic(self, user_id: int, message: str):
         """Запоминает тему разговора на основе сообщения"""
@@ -205,73 +267,87 @@ class ChatHandler:
     # === 🗣️ Блок контекстного диалога ===
     async def update_conversation_context(self, chat_id: str, last_bot_question: str = None):
         """Обновляет контекст диалога"""
-        if chat_id not in self.conversation_context:
-            self.conversation_context[chat_id] = {
-                'last_bot_question': None,
-                'last_interaction_time': None,
-                'is_awaiting_reply': False
-            }
-        
-        if last_bot_question:
-            self.conversation_context[chat_id]['last_bot_question'] = last_bot_question
-            self.conversation_context[chat_id]['is_awaiting_reply'] = True
-        
-        self.conversation_context[chat_id]['last_interaction_time'] = datetime.now()
+        self.context_manager.start_or_update(chat_id, last_bot_question)
 
     def should_continue_conversation(self, chat_id: str, user_message: str) -> bool:
         """Проверяет, является ли сообщение продолжением диалога"""
-        if chat_id not in self.conversation_context:
-            return False
-        
-        context = self.conversation_context[chat_id]
-        
-        # Проверяем таймаут (10 минут)
-        if context['last_interaction_time']:
-            time_diff = datetime.now() - context['last_interaction_time']
-            if time_diff.total_seconds() > 600:
-                return False
-        
-        # Если бот ожидает ответа на свой вопрос
-        if context['is_awaiting_reply']:
-            return True
-        
-        # Проверяем, является ли сообщение ответом на вопрос бота
-        if context['last_bot_question'] and self._is_likely_response(user_message, context['last_bot_question']):
-            return True
-        
-        return False
+        return self.context_manager.should_continue(chat_id, user_message, self._is_likely_response)
     
     def _is_likely_response(self, user_message: str, bot_question: str) -> bool:
         """Проверяет, похоже ли сообщение на ответ на вопрос бота"""
         user_msg_lower = user_message.lower()
         bot_question_lower = bot_question.lower()
         
+        # Проверяем прямые индикаторы ответов
+        if self._has_response_indicator(user_msg_lower):
+            return True
+        
+        # Проверяем совпадение ключевых слов вопроса и ответа
+        if self._has_keyword_overlap(bot_question_lower, user_msg_lower):
+            return True
+        
+        # Проверяем эмотивный контекст
+        if self._has_emotional_context(user_msg_lower):
+            return True
+        
+        return False
+    
+    def _has_response_indicator(self, message: str) -> bool:
+        """Проверяет наличие прямых индикаторов ответа"""
         response_indicators = [
-            'нормально', 'хорошо', 'отлично', 'плохо', 'устал', 'устала',
-            'работаю', 'отдыхаю', 'сижу', 'стою', 'иду', 'ем', 'сплю',
-            r'\d+', 'да', 'нет', 'возможно', 'наверное'
+            # Состояния
+            r'\b(нормально|хорошо|отлично|плохо|так себе|средне)\b',
+            # Усталость
+            r'\b(устал|устала|усталый|изнурен)\b',
+            # Действия
+            r'\b(работаю|отдыхаю|сижу|стою|иду|ем|сплю|гуляю|учусь)\b',
+            # Эмоции
+            r'\b(да|нет|может быть|наверное|возможно|конечно|абсолютно)\b',
+            # Числа (часы, дни, возраст)
+            r'\d+',
+            # Описание чувств
+            r'\b(скучно|интересно|весело|грустно|смешно)\b'
         ]
         
-        for indicator in response_indicators:
-            if re.search(indicator, user_msg_lower):
+        for pattern in response_indicators:
+            if re.search(pattern, message, re.IGNORECASE):
                 return True
-        
-        question_keywords = self._extract_keywords(bot_question_lower)
-        answer_keywords = self._extract_keywords(user_msg_lower)
+        return False
+    
+    def _has_keyword_overlap(self, question: str, answer: str) -> bool:
+        """Проверяет совпадение ключевых слов между вопросом и ответом"""
+        question_keywords = self._extract_keywords(question)
+        answer_keywords = self._extract_keywords(answer)
         
         common_keywords = set(question_keywords) & set(answer_keywords)
         return len(common_keywords) >= 1
     
+    def _has_emotional_context(self, message: str) -> bool:
+        """Проверяет эмотивный контекст сообщения"""
+        emotional_words = {
+            'счастлив', 'радостн', 'грустн', 'печальн', 'скучн',
+            'интересн', 'скучн', 'весел', 'смешн', 'забавн',
+            'обид', 'разочаров', 'удовлетворен', 'благодар'
+        }
+        
+        for word in emotional_words:
+            if re.search(word, message, re.IGNORECASE):
+                return True
+        return False
+    
     def _extract_keywords(self, text: str) -> list:
         """Извлекает ключевые слова из текста"""
-        stop_words = {'как', 'что', 'где', 'когда', 'почему', 'зачем', 'ты', 'вы', 'мне', 'тебе', 'вам'}
+        stop_words = {
+            'как', 'что', 'где', 'когда', 'почему', 'зачем', 
+            'ты', 'вы', 'мне', 'тебе', 'вам', 'я', 'он', 'она',
+            'это', 'то', 'все', 'ничто', 'никто', 'каждый'
+        }
         words = re.findall(r'\b[а-яё]{3,}\b', text)
         return [word for word in words if word not in stop_words]
     
     def end_conversation(self, chat_id: str):
         """Завершает текущий диалог"""
-        if chat_id in self.conversation_context:
-            self.conversation_context[chat_id]['is_awaiting_reply'] = False
+        self.context_manager.end(chat_id)
 
     # === 🔄 Основная логика ответов ===
     def _get_triggers(self):
@@ -322,98 +398,119 @@ class ChatHandler:
 
     async def generate_contextual_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
         """Генерация контекстного ответа с использованием истории чата"""
-        user = update.message.from_user
-        message_text = update.message.text
+        try:
+            user = update.message.from_user
+            message_text = update.message.text
+            user_id = user.id
+            chat_id = str(update.effective_chat.id)
+            
+            # Этап 1: Обработка идентичности пользователя
+            user_name = self._process_user_identity(user, user_id)
+            logging.info(f"🧠 Начало обработки сообщения от {user_name} (ID: {user_id})")
+            
+            # Этап 2: Получение памяти о пользователе
+            user_memory = self.get_user_memory(user_id)
+            known_name = self.recall(user_id, "name") or user_name
+            if not self.recall(user_id, "name"):
+                self.remember(user_id, "name", user_name)
+            
+            # Этап 3: Анализ контекста сообщения
+            mood = self._analyze_user_mood(message_text)
+            last_topic = self.recall(user_id, "last_topic")
+            
+            # Этап 4: Построение контекста для ИИ
+            memory_context = self._build_memory_context(known_name, mood, last_topic)
+            chat_history_context = self.history_manager.get_conversation_context(last_n=15)
+            
+            full_context = self._format_context_for_ai(
+                chat_history_context, 
+                memory_context, 
+                user_name, 
+                message_text
+            )
+            
+            logging.info(f"🧠 Полный контекст для генерации ответа: {len(full_context)} символов")
+            
+            # Этап 5: Генерация и сохранение ответа
+            response = get_boltun_reply(user_name, message_text, full_context)
+            if response and len(response.strip()) > 5:
+                self.history_manager.add_message(
+                    from_user="Болтун",
+                    from_id="bot",
+                    text=response
+                )
+                self.remember(user_id, "last_bot_response", response)
+                await self.update_conversation_context(chat_id, response)
+                logging.info(f"✅ Сгенерирован ответ с использованием истории")
+                return response.strip()
+                
+        except Exception as e:
+            logging.error(f"❌ Ошибка генерации контекстного ответа: {e}")
+            
+        return self._get_fallback_response(user_name if 'user_name' in locals() else "друг")
+    
+    def _process_user_identity(self, user, user_id: int) -> str:
+        """Обработка идентичности пользователя с различением одинаковых имён"""
         user_name = user.first_name or "друг"
-        user_id = user.id
-        chat_id = str(update.effective_chat.id)
-
-        # Добавляем различение пользователей с одинаковыми именами
+        
+        # Различение пользователей с одинаковыми именами
         if user_name.lower() in ['надежда', 'надя']:
-            # Создаем уникальный идентификатор для различения
             stored_identifier = self.recall(user_id, "name_identifier")
             if not stored_identifier:
-                # Сохраняем короткий идентификатор для этой Надежды
-                if user_id == 5307161226:  # ID первой Надежды
+                if user_id == 5307161226:
                     identifier = "Надежда (бабуля)"
-                elif user_id == 5614316592:  # ID второй Надежды
+                elif user_id == 5614316592:
                     identifier = "Надежда (бабушка)"
                 else:
-                    identifier = f"Надежда ({str(user_id)[-4:]})"  # Последние 4 цифры ID
+                    identifier = f"Надежда ({str(user_id)[-4:]})"
                 self.remember(user_id, "name_identifier", identifier)
                 user_name = identifier
             else:
                 user_name = stored_identifier
-
-        logging.info(f"🧠 Начало обработки сообщения от {user_name} (ID: {user_id})")
-
-        # Получаем память о пользователе
-        user_memory = self.get_user_memory(user_id)
-        known_name = self.recall(user_id, "name") or user_name
-        mood = self.recall(user_id, "mood")
-        last_topic = self.recall(user_id, "last_topic")
-
-        # Если имя ещё не сохранено — запоминаем
-        if not self.recall(user_id, "name"):
-            self.remember(user_id, "name", user_name)
-
-        # Получаем контекст из истории чата
-        chat_history_context = self.history_manager.get_conversation_context(last_n=15)
         
-        # Анализируем настроение
-        if any(word in message_text.lower() for word in ["груст", "устал", "плохо", "уныл", "тоск"]):
-            self.remember(user_id, "mood", "грустный")
-            mood = "грустный"
-        elif any(word in message_text.lower() for word in ["супер", "отлично", "весело", "классно", "рад", "счастлив"]):
-            self.remember(user_id, "mood", "радостный")
-            mood = "радостный"
-
-        # Собираем контекст из памяти
-        memory_context_parts = []
+        return user_name
+    
+    def _analyze_user_mood(self, message_text: str) -> str:
+        """Анализ настроения пользователя на основе текста сообщения"""
+        message_lower = message_text.lower()
+        
+        sad_keywords = ["груст", "устал", "плохо", "уныл", "тоск", "печал"]
+        happy_keywords = ["супер", "отлично", "весело", "классно", "рад", "счастлив"]
+        
+        for keyword in sad_keywords:
+            if keyword in message_lower:
+                return "грустный"
+        
+        for keyword in happy_keywords:
+            if keyword in message_lower:
+                return "радостный"
+        
+        return None
+    
+    def _build_memory_context(self, known_name: str, mood: str = None, last_topic: str = None) -> str:
+        """Построение контекста из памяти о пользователе"""
+        context_parts = []
+        
         if known_name:
-            memory_context_parts.append(f"Собеседника зовут {known_name}.")
+            context_parts.append(f"Собеседника зовут {known_name}.")
         if mood:
-            memory_context_parts.append(f"Сейчас он в {mood} настроении.")
+            context_parts.append(f"Сейчас он в {mood} настроении.")
         if last_topic:
-            memory_context_parts.append(f"Ранее обсуждали тему: {last_topic}.")
-            
-        memory_context = " ".join(memory_context_parts)
-
-        # Формируем полный контекст для ИИ
-        full_context = f"""
+            context_parts.append(f"Ранее обсуждали тему: {last_topic}.")
+        
+        return " ".join(context_parts)
+    
+    def _format_context_for_ai(self, chat_history: str, memory_context: str, user_name: str, message_text: str) -> str:
+        """Форматирование полного контекста для отправки в ИИ"""
+        return f"""
 ИСТОРИЯ ЧАТА (последние сообщения):
-{chat_history_context}
+{chat_history}
 
 ИНФОРМАЦИЯ О СОБЕСЕДНИКЕ:
 {memory_context}
 
 ТЕКУЩЕЕ СООБЩЕНИЕ ОТ {user_name.upper()}: {message_text}
 """
-
-        logging.info(f"🧠 Полный контекст для генерации ответа: {len(full_context)} символов")
-
-        try:
-            response = get_boltun_reply(user_name, message_text, full_context)
-            if response and len(response.strip()) > 5:
-                # Сохраняем ответ бота в историю
-                self.history_manager.add_message(
-                    from_user="Болтун",
-                    from_id="bot",
-                    text=response
-                )
-                
-                # Запоминаем последний ответ бота
-                self.remember(user_id, "last_bot_response", response)
-                
-                # Обновляем контекст диалога
-                await self.update_conversation_context(chat_id, response)
-                
-                logging.info(f"✅ Сгенерирован ответ с использованием истории")
-                return response.strip()
-        except Exception as e:
-            logging.error(f"❌ Ошибка генерации контекстного ответа: {e}")
-            
-        return self._get_fallback_response(user_name)
     
     def _get_fallback_response(self, user_name: str) -> str:
         """Запасные ответы"""
