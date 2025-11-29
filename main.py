@@ -420,13 +420,15 @@ NEWS_EXCLUDE_KEYWORDS = [
     "war", "president", "election", "politic", "politics", "military", "soldier", "army",
     "attack", "russia", "ukraine", "conflict", "sanction", "strike", "bomb", "missile",
     "война", "политик", "политика", "армия", "удар", "санкци", "убийство", "теракт", 
-    "насилие", "преступление", "российск", "москв", "кремл", "путин",
+    "насилие", "преступление", "российск", "москв", "кремл", "путин", "территори",
     "sex", "porn", "сексу", "секс", "порно", "эротик", "nut november", "nut",
     "сво", "actor died", "актер умер", "неизвестный", "локальный", "провинциальный",
     "horoscope", "astrology", "гороскоп", "астролог", "zodiac", "знак зодиака",
-    # Фильтры на узконишевые развлечения
-     
-    "indie film", "indie", "documentary", "низкобюджетный"
+    # Фильтры на узконишевые развлечения и игры
+    "indie film", "indie", "documentary", "низкобюджетный",
+    "game", "gaming", "destiny", "fortnite", "call of duty", "esports", "twitch",
+    "gameplay", "режим вторжения", "ковбойск", "игра", "игрок", "видеоигр",
+    "nfl", "nba", "nhl", "soccer", "football league", "спорт", "матч", "турнир"
 ]
 
 def _is_news_ok(title: str) -> bool:
@@ -457,17 +459,24 @@ def _is_news_popular(title: str, description: str = "") -> bool:
     
     combined = (title + " " + description).lower()
     
-    # ИСКЛЮЧИТЬ: скидки, распродажи, локальные события
+    # ИСКЛЮЧИТЬ: политика, войны, локальные события
     exclude_keywords = {
         "discount", "sale", "скидк", "распродаж", "deal", "offer", "coupon",
         "black friday", "cyber monday",
+        # ПОЛИТИКА И ВОЙНА - очень важно!
+        "putin", "путин", "territory", "территори", "war", "война", "army", "армия",
+        "conflict", "конфликт", "military", "военн", "sanction", "санкци",
+        "attack", "атак", "strike", "удар", "требует", "requires", "demands",
         # Локальные страны (только науку интересует везде)
         "ghana", "nigeria", "cameroon", "senegal", "mali", "uganda", "kenya",
         "india", "pakistan", "bangladesh", "australia", "new zealand",
         "africa", "африк", "ганы", "нигери", "индии", "австрали",
         # Локальные спорты и события
         "nrl", "afl", "rugby league", "cricket", "nsw", "sydney", "perth",
-        "thunderstorm", "грозa"
+        "thunderstorm",
+        # Игры и развлечения нишевые
+        "game", "gaming", "destiny", "fortnite", "esports", "twitch",
+        "режим вторжения", "ковбойск", "игра", "видеоигр", "reddit", "nsfw"
     }
     
     for keyword in exclude_keywords:
@@ -489,7 +498,7 @@ def _is_news_popular(title: str, description: str = "") -> bool:
         "quantum", "quantum computing",
         "software", "app", "device", "innovation", "startup",
         "tech", "technology", "digital", "internet",
-        # Известные люди мирового уровня
+        # Известные люди мирового уровня (но не политики)
         "elon musk", "mark zuckerberg", "jeff bezos", "bill gates", "steve jobs",
         # События и явления
         "nasa", "spacex", "james webb", "olympic", "world cup", "earthquake", "volcano",
@@ -497,14 +506,14 @@ def _is_news_popular(title: str, description: str = "") -> bool:
         # Science (работает везде)
         "fusion", "climate", "renewable", "solar", "wind",
         "dark matter", "dark stars", "black hole", "gravity", "physics", "scientist",
-        "space", "mars", "telescope", "mission",
+        "space", "mars", "telescope", "mission", "astronomer", "астроном",
         # Развитые страны
-        "usa", "united states", "america", "europe", "germany", "france", "uk",
-        "japan", "south korea", "canada", "ukraine",
-        "америк", "европ", "германи", "францi", "англи", "япони", "украи",
+        "usa", "united states", "america", "europe", "germany", "france", "uk", "netherlands", "nl"
+        "japan", "south korea",
+        "америк", "европ", "германи", "францi", "англи", "япони",
         "un", "eu", "nato",
         # Известные места
-        "washington", "london", "paris", "berlin", "tokyo", "silicon valley",
+        "washington", "london", "paris", "berlin", "tokyo", "silicon valley", "amsterdam",
         # Health
         "cancer", "disease", "virus", "pandemic", "medicine", "health", "doctor",
         "hospital", "treatment", "vaccine", "research"
