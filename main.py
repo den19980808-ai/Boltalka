@@ -41,7 +41,7 @@ _last_dialog_time = {}  # {chat_id: timestamp of last non-triggered message}
 _shown_news_today = set()  # {article_title}
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
-CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
+CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw,Малага:Malaga")
 
 # Человечные названия стран для вывода
 COUNTRY_NAMES = {"NL": "Нидерланды", "UA": "Украина", "PL": "Польша"}
@@ -292,11 +292,12 @@ SCAN_COUNTRIES = parse_scan_countries(SCAN_COUNTRIES_ENV)
 # с надежным обращением к API и graceful fallback'ами
 
 # --- 1. ПОГОДА (Open-Meteo - бесплатный API без ключей) ---
-# Координаты городов: Леуварден, Одесса, Варшава
+# Координаты городов: Леуварден, Одесса, Варшава, Малага
 CITY_COORDS = {
     "Леуварден": (53.2012, 5.7999),
     "Одесса": (46.4825, 30.7233),
     "Варшава": (52.2297, 21.0122),
+    "Малага": (36.59, -4.535),
 }
 
 def _get_openmeteo_daily(lat: float, lon: float, tz: str = "Europe/Amsterdam") -> dict | None:
@@ -417,18 +418,42 @@ TRUSTED_SOURCES = {
 }
 
 NEWS_EXCLUDE_KEYWORDS = [
+    # === ПОЛИТИКА И КОНФЛИКТЫ ===
     "war", "president", "election", "politic", "politics", "military", "soldier", "army",
     "attack", "russia", "ukraine", "conflict", "sanction", "strike", "bomb", "missile",
     "война", "политик", "политика", "армия", "удар", "санкци", "убийство", "теракт", 
-    "насилие", "преступление", "российск", "москв", "кремл", "путин", "территори",
+    "насилие", "преступление", "российск", "москв", "кремл", "путин", "территори", "требует",
+    "fired", "shot", "killed", "died", "death", "shooting", "shooting", "gunshot",
+    "застрелили", "убили", "убита", "погибли", "скончался", "скончалась", "ушел в отставку",
+    "палестинцы", "израильск", "газа", "хамас", "хезболла", "израил", "ближний восток",
+    
+    # === СМЕРТИ И ТРАУР ===
+    "actor died", "актер умер", "умер", "скончался", "скончалась", "похороны", "похорон",
+    "funeral", "died at", "death of", "passed away", "in memoriam", "tribute to",
+    "ушедший из жизни", "вечная память",
+    
+    # === СКИДКИ И ПОКУПКИ ===
+    "discount", "sale", "скидк", "распродаж", "deal", "offer", "coupon", "price drop",
+    "black friday", "cyber monday", "скидка", "акция", "предложение", "дешевле",
+    "walmart", "amazon prime", "ebay", "aliexpress", "промоакция", "предложени",
+    
+    # === ЭКОНОМИКА И ФИНАНСЫ (СКУЧНО) ===
+    "stock market", "crypto", "bitcoin", "ethereum", "trading", "forex", "investment",
+    "акци", "биржа", "валют", "котировк", "растет цена", "падает цена", "доллар",
+    "рубль", "евро", "инвестици", "трейд", "трейдер",
+    
+    # === ИНТЕРНЕТ И REDDIT (ЛОКАЛЬНОЕ) ===
+    "reddit", "twitter trend", "tiktok", "nsfw", "meme",
+    "реддит", "твиттер тренд", "тикток",
+    
+    # ===  ОСТАЛЬНОЕ (ПОЛИТИКА, ЛОКАЛЬНОЕ, РАЗВЛЕЧЕНИЯ) ===
     "sex", "porn", "сексу", "секс", "порно", "эротик", "nut november", "nut",
-    "сво", "actor died", "актер умер", "неизвестный", "локальный", "провинциальный",
+    "сво", "неизвестный", "локальный", "провинциальный",
     "horoscope", "astrology", "гороскоп", "астролог", "zodiac", "знак зодиака",
-    # Фильтры на узконишевые развлечения и игры
     "indie film", "indie", "documentary", "низкобюджетный",
     "game", "gaming", "destiny", "fortnite", "call of duty", "esports", "twitch",
     "gameplay", "режим вторжения", "ковбойск", "игра", "игрок", "видеоигр",
-    "nfl", "nba", "nhl", "soccer", "football league", "спорт", "матч", "турнир"
+    "nfl", "nba", "nhl", "soccer", "football league", "спорт", "матч", "турнир",
 ]
 
 def _is_news_ok(title: str) -> bool:
@@ -459,31 +484,7 @@ def _is_news_popular(title: str, description: str = "") -> bool:
     
     combined = (title + " " + description).lower()
     
-    # ИСКЛЮЧИТЬ: политика, войны, локальные события
-    exclude_keywords = {
-        "discount", "sale", "скидк", "распродаж", "deal", "offer", "coupon",
-        "black friday", "cyber monday",
-        # ПОЛИТИКА И ВОЙНА - очень важно!
-        "putin", "путин", "territory", "территори", "war", "война", "army", "армия",
-        "conflict", "конфликт", "military", "военн", "sanction", "санкци",
-        "attack", "атак", "strike", "удар", "требует", "requires", "demands",
-        # Локальные страны (только науку интересует везде)
-        "ghana", "nigeria", "cameroon", "senegal", "mali", "uganda", "kenya",
-        "india", "pakistan", "bangladesh", "australia", "new zealand",
-        "africa", "африк", "ганы", "нигери", "индии", "австрали",
-        # Локальные спорты и события
-        "nrl", "afl", "rugby league", "cricket", "nsw", "sydney", "perth",
-        "thunderstorm",
-        # Игры и развлечения нишевые
-        "game", "gaming", "destiny", "fortnite", "esports", "twitch",
-        "режим вторжения", "ковбойск", "игра", "видеоигр", "reddit", "nsfw"
-    }
-    
-    for keyword in exclude_keywords:
-        if keyword in combined:
-            return False
-    
-    # ВКЛЮЧИТЬ: известные компании, люди, события
+    # Сначала проверим популярные ключевые слова - если есть, это скорее всего интересная новость
     popular_keywords = {
         # Tech гиганты
         "apple", "iphone", "ipad", "imac", "macos", "airpods",
@@ -507,24 +508,65 @@ def _is_news_popular(title: str, description: str = "") -> bool:
         "fusion", "climate", "renewable", "solar", "wind",
         "dark matter", "dark stars", "black hole", "gravity", "physics", "scientist",
         "space", "mars", "telescope", "mission", "astronomer", "астроном",
-        # Развитые страны
-        "usa", "united states", "america", "europe", "germany", "france", "uk", "netherlands", "nl"
+        "темная материя", "черная дыра", "гравитация", "физик", "ученые", "исследование",
+        "квантов", "частиц", "атом", "молекул", "биология", "генетик",
+        # Развитые страны и известные места
+        "usa", "united states", "america", "europe", "germany", "france", "uk", "netherlands",
         "japan", "south korea",
-        "америк", "европ", "германи", "францi", "англи", "япони",
+        "америк", "европ", "германи", "франц", "англи", "япони",
         "un", "eu", "nato",
-        # Известные места
         "washington", "london", "paris", "berlin", "tokyo", "silicon valley", "amsterdam",
         # Health
         "cancer", "disease", "virus", "pandemic", "medicine", "health", "doctor",
-        "hospital", "treatment", "vaccine", "research"
+        "hospital", "treatment", "vaccine", "research", "scientists", "study shows",
+        "исследован", "учены", "открыт", "найден", "обнаружен"
     }
     
-    # Если хотя бы одно популярное ключевое слово - интересная новость
-    for keyword in popular_keywords:
-        if keyword in combined:
-            return True
+    # Если есть популярное ключевое слово - это интересная новость!
+    has_popular = any(kw in combined for kw in popular_keywords)
+    if has_popular:
+        return True
     
-    # Если нет популярных ключевых слов - скорее всего нишевая новость
+    # Если нет популярных ключевых слов, проверяем на исключения
+    exclude_keywords = {
+        # === СМЕРТИ, ТРАУР ===
+        "died", "death", "died at", "passed away", "умер", "скончался", "ушедший",
+        "похоронен", "похороны", "ушел в отставку", "скончалась",
+        
+        # === ПОЛИТИКА И КОНФЛИКТЫ ===
+        "putin", "путин", "territory", "территори", "war", "война", "army", "армия",
+        "conflict", "конфликт", "military", "военн", "sanction", "санкци",
+        "attack", "атак", "strike", "удар", "требует", "requires", "demands",
+        "shot", "fired", "shooting", "застрелил", "палестин", "израил", "газа",
+        
+        # === СКИДКИ, АКЦИИ, ПОКУПКИ ===
+        "discount", "sale", "скидк", "распродаж", "deal", "offer", "coupon",
+        "black friday", "cyber monday", "скидка", "акция", "на распродажи",
+        "цены упали", "цена упала", "дешевле чем", "скидка на",
+        
+        # === КАК НАЙТИ / КАК СДЕЛАТЬ (АБСТРАКТНОЕ) ===
+        "how to find", "how to get", "how to make", "как найти", "как получить", 
+        "как сделать", "способ", "способы", "инструкция", "советы как",
+        "потерянн",
+        
+        # === ЛОКАЛЬНЫЕ СТРАНЫ И СОБЫТИЯ ===
+        "ghana", "nigeria", "cameroon", "senegal", "mali", "uganda", "kenya",
+        "india", "pakistan", "bangladesh", "australia", "new zealand",
+        "africa", "африк", "ганы", "нигери", "индии", "австрали",
+        # Локальные спорты и события
+        "nrl", "afl", "rugby league", "cricket", "nsw", "sydney", "perth",
+        "thunderstorm", "погода в", "вчера в",
+        # Игры и развлечения нишевые
+        "game", "gaming", "destiny", "fortnite", "esports", "twitch",
+        "режим вторжения", "ковбойск", "игра", "видеоигр", "reddit", "nsfw"
+    }
+    
+    # Если попадает под исключение - отфильтровать
+    for keyword in exclude_keywords:
+        if keyword in combined:
+            return False
+    
+    # Если нет популярных ключевых слов и нет явных исключений - скорее всего нишевая новость
     return False
 
 def _first_sentence(text: str) -> str:
@@ -738,13 +780,32 @@ def build_morning_digest(target_date: date | None = None) -> tuple[str, dict]:
     
     # 1. ПРИВЕТСТВИЕ
     parts.append("🌅 Доброе утро!")
+    
+    # Добавить информацию о Новом годе
+    today = target_date
+    # Если уже 1 января - это Новый год! Считаем дни до СЛЕДУЮЩЕГО НГ для остальных
+    if today.month == 1 and today.day == 1:
+        days_left = 0
+        parts.append("🎉 С Новым годом вас!")
+    else:
+        new_year = date(today.year + 1, 1, 1)
+        days_left = (new_year - today).days
+        
+        if days_left == 1:
+            # 31 декабря
+            parts.append("🎊 Скоро Новый год! Осталось 1 день!")
+        elif days_left > 1 and days_left <= 31:
+            # С 1 по 30 декабря
+            parts.append(f"✨ До Нового года осталось {days_left} дней!")
+    
     parts.append("")
     
     # 2. ПОГОДА с сокращенными пробелами
     weather_map = build_weather_map()
     if weather_map:
         parts.append("📌 Погода сегодня:")
-        for city_ru, _ in CITIES:
+        # Берём города из CITY_COORDS (там точно все города, включая Малагу)
+        for city_ru in CITY_COORDS.keys():
             wi = weather_map.get(city_ru)
             if not city_ru or not wi:
                 continue
