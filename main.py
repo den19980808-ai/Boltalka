@@ -41,7 +41,7 @@ _last_dialog_time = {}  # {chat_id: timestamp of last non-triggered message}
 _shown_news_today = set()  # {article_title}
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
-CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw,Малага:Malaga")
+CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
 
 # Человечные названия стран для вывода
 COUNTRY_NAMES = {"NL": "Нидерланды", "UA": "Украина", "PL": "Польша"}
@@ -292,12 +292,11 @@ SCAN_COUNTRIES = parse_scan_countries(SCAN_COUNTRIES_ENV)
 # с надежным обращением к API и graceful fallback'ами
 
 # --- 1. ПОГОДА (Open-Meteo - бесплатный API без ключей) ---
-# Координаты городов: Леуварден, Одесса, Варшава, Малага
+# Координаты городов: Леуварден, Одесса, Варшава
 CITY_COORDS = {
     "Леуварден": (53.2012, 5.7999),
     "Одесса": (46.4825, 30.7233),
     "Варшава": (52.2297, 21.0122),
-    "Малага": (36.59, -4.535),
 }
 
 def _get_openmeteo_daily(lat: float, lon: float, tz: str = "Europe/Amsterdam") -> dict | None:
