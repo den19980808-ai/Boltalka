@@ -41,7 +41,7 @@ _last_dialog_time = {}  # {chat_id: timestamp of last non-triggered message}
 _shown_news_today = set()  # {article_title}
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
-CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
+CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw,Малага:Malaga")
 
 # Человечные названия стран для вывода
 COUNTRY_NAMES = {"NL": "Нидерланды", "UA": "Украина", "PL": "Польша"}
@@ -292,11 +292,12 @@ SCAN_COUNTRIES = parse_scan_countries(SCAN_COUNTRIES_ENV)
 # с надежным обращением к API и graceful fallback'ами
 
 # --- 1. ПОГОДА (Open-Meteo - бесплатный API без ключей) ---
-# Координаты городов: Леуварден, Одесса, Варшава
+# Координаты городов: Леуварден, Одесса, Варшава, Малага
 CITY_COORDS = {
     "Леуварден": (53.2012, 5.7999),
     "Одесса": (46.4825, 30.7233),
     "Варшава": (52.2297, 21.0122),
+    "Малага": (36.59, -4.535),
 }
 
 def _get_openmeteo_daily(lat: float, lon: float, tz: str = "Europe/Amsterdam") -> dict | None:
@@ -868,36 +869,54 @@ def strip_unsupported_html(s: str) -> str:
     s = re.sub(r"</?([A-Za-z0-9\-]+)(\s+[^>]*)?>", _repl, s)
     return s
 
+TRIGGER_PATTERNS = [
+    r'\b[Бб]олтун\w*',
+    r'\b[Вв]ася\w*',
+    r'\b[Вв]асилий\w*',
+    r'\b[Пп]оболта\w+',
+    r'\b[Пп]оговори\w+',
+    r'\b[Ээ]й\s*,?\s*бот',
+    r'\b[Пп]ривет\s*,?\s*бот',
+    r'\b[Бб]от\s*,?\s*[Пп]ривет',
+    r'\b[Пп]риветствую',
+    r'\b[Пп]оздороваться',
+    r'\b[Бб]олт\w*',
+]
+
+
+def _extract_message_text(update: Update) -> str | None:
+    if not update or not update.message:
+        return None
+    if update.message.text:
+        return update.message.text
+    if update.message.caption:
+        return update.message.caption
+    return None
+
+
+def _has_trigger(text: str | None) -> bool:
+    if not text:
+        return False
+    for pattern in TRIGGER_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False
+
+
 def should_respond(update: Update) -> bool:
     """Проверяет, стоит ли отвечать на сообщение"""
-    if not update.message or not update.message.text:
+    text = _extract_message_text(update)
+    if not text:
         return False
 
-    text = update.message.text.lower()
+    text_low = text.lower()
     chat_id = str(update.effective_chat.id)
 
-    logging.info(f"📨 Получено сообщение: {text}")
+    logging.info(f"📨 Получено сообщение: {text_low}")
 
-    # Список триггеров для реакции (на какие слова реагирует бот)
-    triggers = [
-        r'\b[Бб]олтун\w*',      # болтун
-        r'\b[Вв]ася\w*',        # вася (новое - имя бота)
-        r'\b[Вв]асилий\w*',     # василий
-        r'\b[Пп]оболта\w+',     # поболтай
-        r'\b[Пп]оговори\w+',    # поговори
-        r'\b[Ээ]й\s*,?\s*бот',  # эй, бот
-        r'\b[Пп]ривет\s*,?\s*бот', # привет, бот
-        r'\b[Бб]от\s*,?\s*[Пп]ривет', # бот, привет
-        r'\b[Пп]риветствую',    # приветствую
-        r'\b[Пп]оздороваться',  # поздороваться
-        r'\b[Бб]олт\w*',        # болтовня
-    ]
-
-    # Проверяем каждый триггер
-    for trigger in triggers:
-        if re.search(trigger, text, re.IGNORECASE):
-            logging.info(f"⚡ Обнаружен триггер: {trigger}")
-            return True
+    if _has_trigger(text):
+        logging.info("⚡ Обнаружен явный триггер")
+        return True
 
     # *** НОВОЕ: Проверяем окно диалога (10 минут без явного упоминания имени) ***
     if chat_id in _last_dialog_time:
@@ -1336,7 +1355,7 @@ async def on_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Логируем входящее сообщение
         user = update.effective_user
         chat = update.effective_chat
-        message_text = update.message.text if update.message else None
+        message_text = _extract_message_text(update)
         chat_id = str(update.effective_chat.id)
         
         logging.info(f"📨 Получено сообщение от {user.first_name if user else 'unknown'}: {message_text}")
@@ -1443,6 +1462,23 @@ async def on_whats_today(update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"❌ Ошибка в обработчике on_whats_today: {e}")
 
 
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Реагируем на фото только если подпись содержит триггер."""
+    msg = getattr(update, "message", None)
+    caption = msg.caption if msg else None
+
+    if not caption:
+        logging.info("📷 Фото без подписи — игнорируем")
+        return
+
+    if not _has_trigger(caption):
+        logging.info("📷 Фото без триггера — игнорируем")
+        return
+
+    logging.info("📷 Фото содержит триггер — запускаем анализ")
+    await chat_handler_instance.handle_photo_message(update, context)
+
+
 # === Отладочный хэндлер ===
 async def debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Логирует все входящие сообщения для отладки"""
@@ -1543,8 +1579,8 @@ def main():
     # Получаем обработчик чата
     chat_handler = get_chat_handler()  # Используем эту переменную
     
-    # Обработчик фото
-    application.add_handler(MessageHandler(filters.PHOTO, chat_handler_instance.handle_photo_message))
+    # Обработчик фото с триггером
+    application.add_handler(MessageHandler(filters.PHOTO, on_photo))
 
     # Команда для просмотра памяти
     application.add_handler(MessageHandler(
