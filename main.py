@@ -41,7 +41,7 @@ _last_dialog_time = {}  # {chat_id: timestamp of last non-triggered message}
 _shown_news_today = set()  # {article_title}
 
 TZ_NAME = os.getenv("TZ", "Europe/Amsterdam")
-CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw,Малага:Malaga")
+CITIES_ENV = os.getenv("CITIES", "Леуварден:Leeuwarden,Одесса:Odesa,Варшава:Warsaw")
 
 # Человечные названия стран для вывода
 COUNTRY_NAMES = {"NL": "Нидерланды", "UA": "Украина", "PL": "Польша"}
@@ -292,12 +292,11 @@ SCAN_COUNTRIES = parse_scan_countries(SCAN_COUNTRIES_ENV)
 # с надежным обращением к API и graceful fallback'ами
 
 # --- 1. ПОГОДА (Open-Meteo - бесплатный API без ключей) ---
-# Координаты городов: Леуварден, Одесса, Варшава, Малага
+# Координаты городов: Леуварден, Одесса, Варшава
 CITY_COORDS = {
     "Леуварден": (53.2012, 5.7999),
     "Одесса": (46.4825, 30.7233),
     "Варшава": (52.2297, 21.0122),
-    "Малага": (36.59, -4.535),
 }
 
 def _get_openmeteo_daily(lat: float, lon: float, tz: str = "Europe/Amsterdam") -> dict | None:
@@ -371,6 +370,23 @@ def _weather_code_to_emoji(code: int | None) -> str:
         return "⛈️"  # Thunderstorm
     else:
         return "🌤️"
+
+
+ICON_DESCRIPTIONS = {
+    "☀️": "ясно и солнечно",
+    "🌤️": "переменная облачность",
+    "🌥": "облачно с прояснениями",
+    "☁️": "пасмурно",
+    "🌫️": "туманно",
+    "🌧️": "дождливо",
+    "❄️": "снежно",
+    "⛈️": "гроза",
+}
+
+
+def _icon_description(icon: str | None) -> str:
+    return ICON_DESCRIPTIONS.get(icon or "", "спокойная погода")
+
 
 def build_weather_map() -> dict:
     """
@@ -594,16 +610,14 @@ def _first_sentence(text: str) -> str:
     return text
 
 def _collect_digest_news() -> list[dict]:
-    """Собирает 3 уникальные популярные новости из разных категорий: 
-    science → technology → general
-    Берёт самые популярные мировые новости, а не локальные"""
+    """Собирает до 2 уникальных популярных новостей из разных категорий"""
     
     # Категории в нужном порядке (согласно рекомендации: science, technology, general)
     categories = ["science", "technology", "general"]
     news_list = []
     
     for category in categories:
-        if len(news_list) >= 3:  # Нужны 3 новости из разных категорий
+        if len(news_list) >= 2:  # Для дайджеста хватит двух новостей
             break
             
         try:
@@ -697,7 +711,7 @@ def _collect_digest_news() -> list[dict]:
     return news_list
 
 def _analyze_news_with_gpt(news_items: list[dict]) -> list[dict]:
-    """Анализирует новости с помощью GPT, делает выжимку 80-120 символов на русском с юмором"""
+    """Генерирует подробные (2-3 предложения) выжимки, которые потом сжимаются в дайджесте"""
     if not news_items:
         logging.warning("⚠️ Нет новостей для анализа")
         return []
@@ -710,12 +724,12 @@ def _analyze_news_with_gpt(news_items: list[dict]) -> list[dict]:
     analyzed = []
     for item in news_items:
         try:
-            prompt = f"""Проанализируй эту новость и сделай краткую выжимку на РУССКОМ языке (80-120 символов).
-Если уместно, добавь мягкий юмор. БЕЗ эмодзи!
+            prompt = f"""Сформулируй на русском развернутую, но компактную выжимку новости.
+Требования: 2-3 предложения, 220-260 символов, без эмодзи и воды, можно лёгкий ироничный тон.
 
-Новость: {item['full_text'][:500]}
+Новость: {item['full_text'][:800]}
 
-Ответь ТОЛЬКО выжимкой, без предисловий и объяснений."""
+Ответь только текстом выжимки без пояснений."""
 
             logging.info(f"🤖 Анализирую новость с GPT: {item['title'][:50]}...")
             
@@ -727,14 +741,14 @@ def _analyze_news_with_gpt(news_items: list[dict]) -> list[dict]:
                         "content": prompt
                     }
                 ],
-                max_tokens=150,
-                temperature=0.7
+                max_tokens=220,
+                temperature=0.65
             )
             
             summary = response.choices[0].message.content.strip()
             analyzed.append({
                 "title": item["title"],
-                "summary": summary
+                "long_summary": summary
             })
             logging.info(f"✅ Выжимка готова: {summary[:80]}...")
             
@@ -745,7 +759,7 @@ def _analyze_news_with_gpt(news_items: list[dict]) -> list[dict]:
             if fallback:
                 analyzed.append({
                     "title": item["title"],
-                    "summary": fallback
+                    "long_summary": fallback
                 })
                 logging.info(f"⚠️ Использован fallback для новости: {fallback[:80]}...")
     
@@ -764,6 +778,354 @@ def _birthdays_for_today(target_date: date | None = None) -> list[dict]:
     people = load_birthdays()
     return birthdays_for_date(target_date, people)
 
+
+DIGEST_TARGET_CHARS = 780
+DIGEST_MAX_CHARS = 820
+
+
+def _shorten_text(text: str | None, limit: int = 120) -> str:
+    clean = (text or "").strip()
+    if not clean:
+        return ""
+    if len(clean) <= limit:
+        return clean
+    cutoff = clean[:limit].rsplit(" ", 1)[0]
+    if not cutoff:
+        cutoff = clean[:limit]
+    return cutoff.rstrip(",.;:—") + "…"
+
+
+def _bold_headline(text: str | None, limit: int = 90) -> str:
+    clean = (text or "").strip()
+    if not clean:
+        return ""
+    if clean.startswith("<b>"):
+        return clean
+    if len(clean) <= limit:
+        return f"<b>{clean}</b>"
+    head = clean[:limit]
+    if " " in head:
+        head = head.rsplit(" ", 1)[0]
+    if not head:
+        head = clean[:limit]
+    tail = clean[len(head):].lstrip()
+    if tail:
+        return f"<b>{head}</b> {tail}"
+    return f"<b>{head}</b>"
+
+
+def _pop_last_marker(block: str, marker: str) -> tuple[str, bool]:
+    idx = block.rfind(marker)
+    if idx == -1:
+        return block, False
+    before = block[:idx].rstrip()
+    after = block[idx + len(marker):].strip()
+    if before and after:
+        return f"{before}\n\n{after}", True
+    return before or after, True
+
+
+def _clip_digest_text(text: str, max_chars: int = DIGEST_MAX_CHARS) -> str:
+    normalized = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if len(normalized) <= max_chars:
+        return normalized
+
+    working = normalized
+    working, has_closing = _pop_last_marker(working, "Увидимся завтра 👋")
+    working, has_wish = _pop_last_marker(working, "✨ Хорошего дня!")
+
+    tail_parts = []
+    if has_wish:
+        tail_parts.append("✨ Хорошего дня!")
+    if has_closing:
+        tail_parts.append("Увидимся завтра 👋")
+    tail = "\n\n".join(tail_parts)
+
+    allowance = max(max_chars - (len(tail) + (2 if tail else 0)), 0)
+    body = working[:allowance].rstrip()
+    if len(working) > allowance and allowance > 0:
+        body = body.rsplit(" ", 1)[0] if " " in body else body
+        body = body.rstrip(",.;:—") + "…"
+
+    assembled = []
+    if body:
+        assembled.append(body)
+    if tail:
+        assembled.append(tail)
+
+    result = "\n\n".join(assembled).strip()
+    if len(result) > max_chars:
+        result = result[:max_chars].rstrip()
+    open_tags = result.count("<b>")
+    close_tags = result.count("</b>")
+    if open_tags > close_tags:
+        result += "</b>" * (open_tags - close_tags)
+    return result
+
+
+def _days_until_new_year(today: date) -> int:
+    if today.month == 1 and today.day == 1:
+        return 0
+    next_new_year = date(today.year + 1, 1, 1)
+    return max((next_new_year - today).days, 0)
+
+
+def _prepare_weather_entries(weather_map: dict) -> list[dict]:
+    entries = []
+    for city in CITY_COORDS.keys():
+        info = weather_map.get(city)
+        if not info:
+            continue
+        entries.append({
+            "city": city,
+            "min": info.get("min"),
+            "max": info.get("max"),
+            "icon": info.get("icon"),
+            "condition": _icon_description(info.get("icon")),
+        })
+    return entries
+
+
+def _collect_digest_payload(target_date: date) -> tuple[dict, dict]:
+    today = target_date
+    days_left = _days_until_new_year(today)
+
+    weather_map = build_weather_map()
+    weather_entries = _prepare_weather_entries(weather_map)
+
+    news_items = _collect_digest_news()
+    news_briefs = []
+    if news_items:
+        analyzed = _analyze_news_with_gpt(news_items)
+        source_index = {item["title"]: item for item in news_items}
+        for brief in analyzed:
+            base = source_index.get(brief.get("title")) or {}
+            news_briefs.append({
+                "title": brief.get("title"),
+                "long_summary": brief.get("long_summary"),
+                "source": base.get("source"),
+                "category": base.get("category"),
+            })
+        if not news_briefs:
+            for item in news_items:
+                summary = _first_sentence(item.get("full_text") or "") or item.get("title")
+                news_briefs.append({
+                    "title": item.get("title"),
+                    "long_summary": summary,
+                    "source": item.get("source"),
+                    "category": item.get("category"),
+                })
+
+    birthdays_today = _birthdays_for_today(today)
+    holidays_text = ""
+    try:
+        holidays_text = strip_unsupported_html(
+            build_holidays_section(today, _intel_chat, birthdays_today)
+        )
+    except Exception as exc:
+        logging.warning(f"⚠️ Не удалось сформировать блок праздников: {exc}")
+        holidays_text = ""
+
+    wish_label, wish_seed = get_random_wish_section()
+
+    payload = {
+        "today": today,
+        "weekday": WEEKDAY_RU[today.weekday()],
+        "days_until_new_year": days_left,
+        "weather": weather_entries,
+        "news": news_briefs,
+        "birthdays": birthdays_today,
+        "holidays_text": holidays_text.strip(),
+        "wish_label": wish_label,
+        "wish_seed": wish_seed,
+        "wish_full_text": None,
+    }
+
+    return payload, weather_map
+
+
+def _format_weather_for_prompt(entries: list[dict]) -> str:
+    if not entries:
+        return "нет данных"
+    lines = []
+    for entry in entries:
+        city = entry.get("city")
+        t_min = entry.get("min")
+        t_max = entry.get("max")
+        icon = entry.get("icon", "")
+        condition = entry.get("condition")
+        if city is None:
+            continue
+        if t_min is None or t_max is None:
+            lines.append(f"{city}: данных нет")
+        else:
+            cond_part = f" ({condition})" if condition else ""
+            lines.append(f"{city}: от {t_min}° до {t_max}° {icon}{cond_part}".strip())
+    return "\n".join(lines)
+
+
+def _format_news_for_prompt(news_items: list[dict]) -> str:
+    if not news_items:
+        return "нет свежих новостей"
+    lines = []
+    for idx, item in enumerate(news_items, start=1):
+        title = item.get("title") or "Новость"
+        summary = item.get("long_summary") or ""
+        source = item.get("source")
+        source_suffix = f" ({source})" if source else ""
+        lines.append(f"{idx}. {title}{source_suffix}\nДетали: {summary}")
+    return "\n\n".join(lines)
+
+
+def _format_birthdays_for_prompt(birthdays: list[dict]) -> str:
+    if not birthdays:
+        return ""
+    out = []
+    for person in birthdays:
+        name = person.get("name")
+        if not name:
+            continue
+        age = person.get("age")
+        note = person.get("note") or ""
+        age_part = f" ({age})" if age else ""
+        note_part = f" — {note}" if note else ""
+        out.append(f"{name}{age_part}{note_part}".strip())
+    return "\n".join(out)
+
+
+def _compose_digest_prompt(data: dict) -> str:
+    weather_block = _format_weather_for_prompt(data.get("weather") or [])
+    news_block = _format_news_for_prompt(data.get("news") or [])
+    birthdays_block = _format_birthdays_for_prompt(data.get("birthdays") or []) or "<нет>"
+    holidays_block = (data.get("holidays_text") or "").strip() or "<нет>"
+    wish_line = f"{data.get('wish_label')}: {data.get('wish_seed')}"
+
+    return (
+        "Ты — дружелюбный утренний бот для семейного чата Telegram. "
+        "На основе данных составь цельное сообщение из 4-5 абзацев на русском языке. "
+        "Стиль тёплый, естественный, без канцелярита, можно использовать 1-2 эмодзи.\n\n"
+        f"ОБЯЗАТЕЛЬНО: первая строка должна быть ровно '🌅 Доброе утро!'. Весь ответ держи в диапазоне {DIGEST_TARGET_CHARS - 80}-{DIGEST_TARGET_CHARS} символов (жёсткий максимум {DIGEST_MAX_CHARS}). "
+        "Первый абзац — до 220 символов, только приветствие и счётчик дней до Нового года. Второй абзац — погода, перечисли ВСЕ города в формате '<b>Город</b>: <b>от X° до Y°</b> (состояние)', избегая лишних слов и держа абзац короче 220 символов. "
+        "Новости — отдельный абзац: дай одно законченное предложение по каждой новости (<110 символов), упоминая все пункты из данных. Не обрывай мысли и не сокращай список (их будет не более двух). "
+        "Если есть праздники/дни рождения (данные не равны '<нет>') — отдельный абзац. Перед финалом сделай отдельный абзац с приметой/шуткой/советом из данных. После него отдельной строкой вставь '✨ Хорошего дня!'. "
+        "Последняя строка должна быть 'Увидимся завтра 👋'. Ключевые факты (названия городов, температуры, погодные состояния, важные цифры, имена людей) выделяй тегами <b>…</b>, не более трёх выделений на абзац. Абзацы разделяй пустой строкой.\n\n"
+        "ИСПОЛЬЗУЙ ЭТИ ДАННЫЕ (если блок пуст — просто не упоминай его):\n"
+        f"Дата: {data['today'].isoformat()} ({data['weekday']}).\n"
+        f"До Нового года: {data['days_until_new_year']} дней.\n\n"
+        f"Погода:\n{weather_block}\n\n"
+        f"Новости:\n{news_block}\n\n"
+        f"Дни рождения (если '<нет>' — пропусти блок):\n{birthdays_block}\n\n"
+        f"Праздники и события (если '<нет>' — пропусти блок):\n{holidays_block}\n\n"
+        f"Примета/заметка (обязательно процитируй или переосмысли):\n{wish_line}\n\n"
+        "Требования к ответу: обычный текст без списков HTML, абзацы разделяй пустой строкой, не придумывай фактов вне данных."
+    )
+
+
+def _generate_digest_with_gpt(data: dict) -> str:
+    client = _get_openai()
+    if not client:
+        logging.error("❌ OpenAI клиент недоступен для генерации дайджеста")
+        return ""
+    prompt = _compose_digest_prompt(data)
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600,
+            temperature=0.65,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logging.error(f"❌ Не удалось собрать дайджест через GPT: {exc}")
+        return ""
+
+
+def _build_digest_fallback_text(data: dict, weather_map: dict) -> str:
+    parts = ["🌅 Доброе утро!"]
+
+    days_left = data.get("days_until_new_year", 0)
+    if days_left == 0:
+        parts.append("🎉 С Новым годом вас!")
+    elif 0 < days_left <= 31:
+        suffix = "день" if days_left == 1 else "дней"
+        parts.append(f"✨ До Нового года осталось {days_left} {suffix}!")
+    parts.append("")
+
+    weather_entries = _prepare_weather_entries(weather_map)
+    if weather_entries:
+        weather_bits = []
+        for entry in weather_entries:
+            city = entry.get("city")
+            if not city:
+                continue
+            t_min = entry.get("min")
+            t_max = entry.get("max")
+            icon = entry.get("icon", "")
+            condition = entry.get("condition")
+            if t_min is None or t_max is None:
+                continue
+            cond_text = f" ({condition})" if condition else ""
+            weather_bits.append(
+                f"<b>{city}</b> <b>от {t_min}° до {t_max}°</b> {icon}{cond_text}"
+            )
+        if weather_bits:
+            parts.append("📌 Погода: " + "; ".join(weather_bits))
+            parts.append("")
+
+    if data.get("news"):
+        parts.append("📰 Новости дня:")
+        for item in data["news"]:
+            summary = _shorten_text(item.get("long_summary") or item.get("title"), limit=110)
+            if summary:
+                parts.append(f"• {_bold_headline(summary, limit=90)}")
+        parts.append("")
+
+    holidays_block = data.get("holidays_text")
+    if holidays_block:
+        parts.append("🎉 " + _bold_headline(_shorten_text(holidays_block, limit=140), limit=110))
+        parts.append("")
+
+    birthday_lines = []
+    for person in data.get("birthdays") or []:
+        name = person.get("name")
+        if not name:
+            continue
+        age = person.get("age")
+        note = person.get("note")
+        entry = f"<b>{name}</b>"
+        if age:
+            entry += f" ({age})"
+        if note:
+            entry += f" — {note}"
+        birthday_lines.append(entry)
+    if birthday_lines:
+        parts.append("🎂 Именинники: " + "; ".join(birthday_lines))
+        parts.append("")
+
+    wish_text = data.get("wish_full_text")
+    if not wish_text:
+        wish_text = ai_generate_wish_extended_intel()
+        if wish_text:
+            data["wish_full_text"] = wish_text
+    if not wish_text:
+        wish_text = data.get("wish_seed")
+    wish_note = None
+    if data.get("wish_label") and data.get("wish_seed"):
+        wish_note = f"<b>{data['wish_label']}</b>: {data['wish_seed']}"
+    if wish_text:
+        parts.append("✨ Хорошего дня!")
+        parts.append("")
+        if wish_note:
+            parts.append(wish_note)
+            parts.append("")
+        parts.append(wish_text)
+    else:
+        parts.append("✨ Хорошего дня! Увидимся завтра")
+
+    parts.append("")
+    parts.append("Увидимся завтра 👋")
+    return "\n".join(parts)
+
 # --- 4. ОСНОВНАЯ ФУНКЦИЯ ФОРМИРОВАНИЯ ДАЙДЖЕСТА ---
 def build_morning_digest(target_date: date | None = None) -> tuple[str, dict]:
     """
@@ -776,88 +1138,17 @@ def build_morning_digest(target_date: date | None = None) -> tuple[str, dict]:
     except Exception:
         target_date = datetime.now().date()
 
-    parts = []
-    
-    # 1. ПРИВЕТСТВИЕ
-    parts.append("🌅 Доброе утро!")
-    
-    # Добавить информацию о Новом годе
-    today = target_date
-    # Если уже 1 января - это Новый год! Считаем дни до СЛЕДУЮЩЕГО НГ для остальных
-    if today.month == 1 and today.day == 1:
-        days_left = 0
-        parts.append("🎉 С Новым годом вас!")
-    else:
-        new_year = date(today.year + 1, 1, 1)
-        days_left = (new_year - today).days
-        
-        if days_left == 1:
-            # 31 декабря
-            parts.append("🎊 Скоро Новый год! Осталось 1 день!")
-        elif days_left > 1 and days_left <= 31:
-            # С 1 по 30 декабря
-            parts.append(f"✨ До Нового года осталось {days_left} дней!")
-    
-    parts.append("")
-    
-    # 2. ПОГОДА с сокращенными пробелами
-    weather_map = build_weather_map()
-    if weather_map:
-        parts.append("📌 Погода сегодня:")
-        # Берём города из CITY_COORDS (там точно все города, включая Малагу)
-        for city_ru in CITY_COORDS.keys():
-            wi = weather_map.get(city_ru)
-            if not city_ru or not wi:
-                continue
-            # Компактный формат без лишних пробелов
-            city_display = f"• {city_ru:<8}"  # 8 символов для выравнивания (сокращено)
-            temp_display = f" — {wi['min']:3}° → {wi['max']:3}° {wi['icon']}"
-            parts.append(city_display + temp_display)
-        parts.append("")
-    
-    # 3. РАЗДЕЛИТЕЛЬ
-    parts.append("∙∙∙")
-    parts.append("")
-    
-    # 4. НОВОСТИ ДЛЯ ДАЙДЖЕСТА (3 новости с проверкой дублей)
-    news_items = _collect_digest_news()
-    if news_items:
-        # Анализируем новости с GPT: выжимка 80-120 символов на русском с юмором
-        analyzed_news = _analyze_news_with_gpt(news_items)
-        if analyzed_news:
-            parts.append("📰 Новости дня:")
-            for item in analyzed_news:
-                parts.append(f"• {item['summary']}")
-            parts.append("")
-    
-    # 5. РАЗДЕЛИТЕЛЬ
-    parts.append("∙∙∙")
-    parts.append("")
-    
-    # 6. ПОЖЕЛАНИЕ НА ДЕНЬ (основное + blockquote с цитатой)
-    wish_text = ai_generate_wish_extended_intel()
-    
-    parts.append("✨ Хорошего дня!")
-    parts.append("")
-    
-    # Разделяем основное пожелание от цитаты по пустой строке
-    if "\n\n" in wish_text:
-        main_wish, citation = wish_text.split("\n\n", 1)
-        parts.append(main_wish)
-        parts.append("")
-        # Обернуть цитату в blockquote
-        parts.append(f"<blockquote>{citation}</blockquote>")
-    else:
-        # Fallback если нет разделения
-        parts.append(wish_text)
-    
-    parts.append("")
-    
-    # 7. ФИНАЛЬНОЕ ЗАКЛЮЧЕНИЕ
-    parts.append("Увидимся завтра")
-    
-    text = "\n".join(p for p in parts if p is not None)
-    return text, weather_map
+    payload, weather_map = _collect_digest_payload(target_date)
+
+    digest_text = _generate_digest_with_gpt(payload)
+    if not digest_text:
+        logging.warning("⚠️ GPT-дайджест недоступен, используем резервный формат")
+        digest_text = _build_digest_fallback_text(payload, weather_map)
+
+    digest_text = _clip_digest_text(digest_text, max_chars=DIGEST_MAX_CHARS)
+    logging.info(f"📏 Длина дайджеста: {len(digest_text)} символов")
+
+    return digest_text, weather_map
 
 
 def strip_unsupported_html(s: str) -> str:
